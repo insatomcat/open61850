@@ -155,3 +155,42 @@ def test_processbus_capture_on_afpacket(monkeypatch: pytest.MonkeyPatch) -> None
     finally:
         unsubscribe_sv()
         unsubscribe_goose()
+
+
+@linux_only
+def test_processbus_capture_lets_sv_through_only_for_an_sv_subscriber(monkeypatch: pytest.MonkeyPatch) -> None:
+    from processbus_capture import ProcessbusCapture
+
+    monkeypatch.setenv("PO_CAPTURE_BACKEND", "afpacket")
+    sender = _raw_sender()
+    mux = ProcessbusCapture("lo")
+    goose: list[bytes] = []
+    unsubscribe_goose = mux.subscribe_goose(lambda _ts, raw: goose.append(raw))
+
+    def wait_mode(mode: str) -> None:
+        deadline = time.time() + 5
+        while mux.stats()["bpf_mode"] != mode and time.time() < deadline:
+            time.sleep(0.02)
+        assert mux.stats()["bpf_mode"] == mode
+
+    try:
+        with sender:
+            wait_mode("goose")
+            sender.send(_frame(0x88BA, vlan=105))
+            sender.send(_frame(0x88B8, vlan=305))
+            deadline = time.time() + 5
+            while not goose and time.time() < deadline:
+                time.sleep(0.02)
+            assert mux.stats()["packets"] == 1  # the SV frame stayed in the kernel
+
+            sv: list[bytes] = []
+            unsubscribe_sv = mux.subscribe_sv(lambda _h, raw, _ts: sv.append(raw))
+            wait_mode("goose+sv")
+            sender.send(_frame(0x88BA, vlan=105))
+            deadline = time.time() + 5
+            while not sv and time.time() < deadline:
+                time.sleep(0.02)
+            unsubscribe_sv()
+            assert sv == [_frame(0x88BA, vlan=105)]
+    finally:
+        unsubscribe_goose()

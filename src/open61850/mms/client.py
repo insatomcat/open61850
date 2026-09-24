@@ -111,6 +111,11 @@ class MmsClient:
             self._receiver.join(timeout=5)
 
     @property
+    def local_address(self) -> Optional[str]:
+        """This client's IP address, as the server sees it in RCB Owner attributes."""
+        return self._conn.local_address
+
+    @property
     def is_connected(self) -> bool:
         return not self._closed.is_set()
 

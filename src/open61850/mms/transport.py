@@ -158,6 +158,14 @@ class IsoConnection:
             if payload[2] & _EOT:
                 return b"".join(chunks)
 
+    @property
+    def local_address(self) -> Optional[str]:
+        """This end's IP address (what IEC 61850 servers record as Owner)."""
+        try:
+            return self._sock.getsockname()[0]
+        except (OSError, IndexError):
+            return None
+
     def close(self) -> None:
         try:
             self._sock.shutdown(socket.SHUT_RDWR)

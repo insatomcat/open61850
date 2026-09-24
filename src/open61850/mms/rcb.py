@@ -94,7 +94,7 @@ class RcbStatus:
 
     @property
     def free(self) -> bool:
-        """Neither enabled nor reserved by another client."""
+        """Neither enabled nor reserved."""
         if self.rpt_ena:
             return False
         if self.resv:
@@ -102,6 +102,20 @@ class RcbStatus:
         if self.resv_tms not in (None, 0):
             return False
         return True
+
+    def available_to(self, address: Optional[str]) -> bool:
+        """Free, or reserved but not enabled by ``address`` (an earlier association of ours).
+
+        Some servers (the VMC7) keep ResvTms and Owner after the association
+        that reserved the block is gone, so a restarted client finds its own
+        old reservations. A block reserved by configuration (ResvTms = -1) is
+        never taken.
+        """
+        if self.free:
+            return True
+        if self.rpt_ena or self.reserved_by_configuration or not address:
+            return False
+        return _format_owner(self.owner) == address
 
 
 _STATUS_ATTRIBUTES = ("RptEna", "RptID", "DatSet", "Owner")
@@ -143,13 +157,23 @@ def read_status(client: MmsClient, rcb: ObjectName) -> RcbStatus:
     return status
 
 
-def find_free(client: MmsClient, candidates: list[ObjectName]) -> Optional[RcbStatus]:
-    """First free block among ``candidates`` (e.g. the instances of one group)."""
-    for rcb in candidates:
-        status = read_status(client, rcb)
-        if status.free:
-            return status
-    return None
+def usable(client: MmsClient, candidates: list[ObjectName], *, reclaim_own: bool = True) -> list[RcbStatus]:
+    """The blocks among ``candidates`` worth trying, best first.
+
+    Free blocks come first; with ``reclaim_own``, blocks this client's
+    address reserved earlier but did not enable follow. The server may still
+    refuse one of those (the reservation belongs to another association):
+    try the next.
+    """
+    address = client.local_address if reclaim_own else None
+    statuses = [read_status(client, rcb) for rcb in candidates]
+    return [s for s in statuses if s.free] + [s for s in statuses if not s.free and s.available_to(address)]
+
+
+def find_free(client: MmsClient, candidates: list[ObjectName], *, reclaim_own: bool = True) -> Optional[RcbStatus]:
+    """First usable block among ``candidates`` (see :func:`usable`)."""
+    found = usable(client, candidates, reclaim_own=reclaim_own)
+    return found[0] if found else None
 
 
 @dataclass
@@ -213,5 +237,7 @@ def enable(client: MmsClient, rcb: ObjectName, settings: Optional[RcbSettings] =
 def disable(client: MmsClient, rcb: ObjectName) -> None:
     """Disable a block and release its reservation."""
     client.write(_attr(rcb, "RptEna"), BoolData(False))
-    if not is_buffered(rcb):
+    if is_buffered(rcb):
+        client.write(_attr(rcb, "ResvTms"), IntData(0))
+    else:
         client.write(_attr(rcb, "Resv"), BoolData(False))

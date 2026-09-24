@@ -430,6 +430,32 @@ def test_find_free_instance(serve: Callable[..., tuple[MmsClient, FakeServer]]) 
     assert rcb.read_status(client, candidates[1]).describe() == "reserved 30s"
 
 
+def test_find_free_reclaims_our_own_reservation(
+    serve: Callable[..., tuple[MmsClient, FakeServer]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ours, theirs = bytes([192, 0, 2, 71]), bytes([192, 0, 2, 253])
+    values = {
+        **_brcb_values(1, enabled=False, resv_tms=5), f"{BRCB}1$Owner": OctetStringData(theirs),
+        **_brcb_values(2, enabled=True, resv_tms=5), f"{BRCB}2$Owner": OctetStringData(ours),
+        **_brcb_values(3, enabled=False, resv_tms=-1), f"{BRCB}3$Owner": OctetStringData(ours),
+        **_brcb_values(4, enabled=False, resv_tms=5), f"{BRCB}4$Owner": OctetStringData(ours),
+    }
+    client, _ = serve(FakeModel(values))
+    monkeypatch.setattr(MmsClient, "local_address", property(lambda _self: "192.0.2.71"))
+    candidates = [ObjectName(f"{BRCB}{i}", "LD0") for i in (1, 2, 3, 4)]
+    # 1 reserved by someone else, 2 enabled by us (running), 3 assigned by configuration: only 4.
+    status = rcb.find_free(client, candidates)
+    assert status is not None and status.rcb == candidates[3]
+    assert rcb.find_free(client, candidates, reclaim_own=False) is None
+
+
+def test_disable_releases_a_brcb(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    model = FakeModel(_brcb_values(1, enabled=True, resv_tms=5))
+    client, _ = serve(model)
+    rcb.disable(client, ObjectName(f"{BRCB}1", "LD0"))
+    assert model.writes == [(f"{BRCB}1$RptEna", BoolData(False)), (f"{BRCB}1$ResvTms", IntData(0))]
+
+
 def test_status_description() -> None:
     brcb = ObjectName("LLN0$BR$CB01", "LD0")
     assert rcb.RcbStatus(brcb, rpt_ena=False, resv_tms=0).describe() == "free"
