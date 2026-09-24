@@ -5,9 +5,10 @@
 
 One background thread receives every PDU: responses are matched to their
 request by invokeID, so several requests may be outstanding (from several
-threads); informationReports go to the ``on_information_report`` callback.
-The callback runs on the receive thread: keep it short or hand the work to
-a queue.
+threads); informationReports go to the ``on_information_report`` callback
+and to the listeners added with :meth:`MmsClient.add_report_listener`.
+Callbacks run on the receive thread: keep them short or hand the work to a
+queue.
 
 Example::
 
@@ -59,6 +60,7 @@ class MmsClient:
     ) -> None:
         self._conn = connection
         self._on_report = on_information_report
+        self._listeners: list[InformationReportCallback] = []
         self.request_timeout = request_timeout
         self._invoke_ids = itertools.count(1)
         self._pending: dict[int, _Pending] = {}
@@ -141,8 +143,12 @@ class MmsClient:
 
     def _dispatch(self, incoming: pdu.IncomingPdu) -> None:
         if isinstance(incoming, InformationReport):
+            with self._lock:
+                listeners = list(self._listeners)
             if self._on_report is not None:
                 self._on_report(incoming)
+            for listener in listeners:
+                listener(incoming)
             return
         invoke_id = getattr(incoming, "invoke_id", None)
         if invoke_id is None:
@@ -163,6 +169,16 @@ class MmsClient:
         for p in pending.values():
             p.error = reason
             p.done.set()
+
+    def add_report_listener(self, listener: InformationReportCallback) -> None:
+        """Also pass every informationReport to ``listener`` (on the receive thread)."""
+        with self._lock:
+            self._listeners.append(listener)
+
+    def remove_report_listener(self, listener: InformationReportCallback) -> None:
+        with self._lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
 
     # --- requests ------------------------------------------------------------
 

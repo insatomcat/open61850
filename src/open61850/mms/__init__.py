@@ -8,10 +8,12 @@
 - :mod:`.client`: :class:`MmsClient`, requests matched by invokeID.
 - :mod:`.report`: IEC 61850 report decoding, OptFlds / TrgOps / ReasonCode.
 - :mod:`.rcb`: report control block status, reservation and enabling.
+- :mod:`.control`: controls (direct and SBO, normal and enhanced security).
 - :mod:`.types`: type descriptions (GetVariableAccessAttributes) and value labelling.
 """
 
 from .client import MmsClient
+from .control import ControlError, ControlResult, LastApplError, Origin, operate
 from .errors import (
     DataAccessError,
     MmsConnectionError,
@@ -37,4 +39,5 @@ __all__ = [
     "Report", "ReportEntry", "OptFlds", "TrgOps", "ReasonCode", "decode_report", "is_report",
     "MmsError", "MmsConnectionError", "MmsTimeout", "MmsProtocolError", "MmsReject",
     "DataAccessError", "ServiceError",
+    "operate", "Origin", "ControlResult", "ControlError", "LastApplError",
 ]

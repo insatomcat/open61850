@@ -9,10 +9,14 @@
     python3 tools/mms_client.py HOST[:PORT] read DOMAIN/ITEM [DOMAIN/ITEM ...]
     python3 tools/mms_client.py HOST[:PORT] dataset DOMAIN/LLN0$DSNAME
     python3 tools/mms_client.py HOST[:PORT] subscribe DOMAIN/LLN0$BR$NAME [--integrity-ms 2000]
+    python3 tools/mms_client.py HOST[:PORT] operate DOMAIN/LN$CO$DO open|close|true|false|NUMBER
 
 ``subscribe`` takes a block or the name of a group without its instance
 number (``IED01_LD0/LLN0$BR$CB_LDPHAS1_DQPO``): it picks a free instance,
 enables it, prints the decoded reports and disables it on Ctrl-C.
+
+``operate`` runs one control (station-control origin) with the object's own
+control model and prints the outcome, or the AddCause of a refusal.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from iec61850.mms import (  # noqa: E402
     decode_report,
     is_report,
     MmsType,
+    control,
     rcb,
 )
 
@@ -128,6 +133,26 @@ def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Qu
             print(f"\ndisabled {status.rcb}")
 
 
+def parse_ctl_val(text: str) -> control.CtlValue:
+    lowered = text.lower()
+    if lowered in ("close", "on", "true"):
+        return True
+    if lowered in ("open", "off", "false"):
+        return False
+    return float(text) if "." in text else int(text)
+
+
+def cmd_operate(client: MmsClient, args: argparse.Namespace) -> None:
+    obj = control.control_object_name(args.name)
+    ctl_model = control.read_ctl_model(client, obj)
+    print(f"{obj}: {control.CTL_MODELS.get(ctl_model, ctl_model)}", flush=True)
+    result = control.operate(
+        client, obj, args.value, origin=control.Origin(control.OR_CAT_STATION_CONTROL, b"po"),
+        ctl_num=args.ctl_num, test=args.test, ctl_model=ctl_model,
+    )
+    print(f"done: {result}")
+
+
 def _type_or_none(client: MmsClient, name: ObjectName) -> Optional[MmsType]:
     try:
         return client.get_type(name)
@@ -149,6 +174,11 @@ def main() -> int:
     p = sub.add_parser("subscribe")
     p.add_argument("name", type=parse_name)
     p.add_argument("--integrity-ms", type=int, default=2000)
+    p = sub.add_parser("operate")
+    p.add_argument("name", type=parse_name)
+    p.add_argument("value", type=parse_ctl_val)
+    p.add_argument("--ctl-num", type=int, default=0)
+    p.add_argument("--test", action="store_true", help="set the Test flag")
     args = parser.parse_args()
 
     host, _, port = args.server.partition(":")
@@ -158,7 +188,10 @@ def main() -> int:
             if args.command == "subscribe":
                 cmd_subscribe(client, args, reports)
             else:
-                {"domains": cmd_domains, "rcbs": cmd_rcbs, "read": cmd_read, "dataset": cmd_dataset}[args.command](
+                {
+                    "domains": cmd_domains, "rcbs": cmd_rcbs, "read": cmd_read, "dataset": cmd_dataset,
+                    "operate": cmd_operate,
+                }[args.command](
                     client, args
                 )
     except MmsError as exc:
