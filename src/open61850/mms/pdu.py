@@ -39,6 +39,7 @@ TAG_CONCLUDE_RESPONSE = 0x8C
 SERVICE_GET_NAME_LIST = 1
 SERVICE_READ = 4
 SERVICE_WRITE = 5
+SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES = 6
 SERVICE_GET_NAMED_VARIABLE_LIST_ATTRIBUTES = 12
 
 # GetNameList basicObjectClass
@@ -181,6 +182,12 @@ def get_name_list_request(
     if continue_after is not None:
         content += ber.encode_tlv(0x82, continue_after.encode("ascii"))
     return ber.encode_tlv(ber.make_tag(SERVICE_GET_NAME_LIST, constructed=True), content)
+
+
+def get_variable_access_attributes_request(name: ObjectName) -> bytes:
+    """GetVariableAccessAttributes-Request, name [0] form."""
+    tag = ber.make_tag(SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES, constructed=True)
+    return ber.encode_tlv(tag, ber.encode_tlv(0xA0, encode_object_name(name)))
 
 
 def get_named_variable_list_attributes_request(name: ObjectName) -> bytes:

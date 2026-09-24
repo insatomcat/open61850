@@ -22,6 +22,7 @@ def test_library_imports_without_optional_dependencies() -> None:
     code = (
         "import sys\n"
         "import iec61850.ber, iec61850.data, iec61850.ethernet, iec61850.goose, iec61850.sv\n"
+        "import iec61850.quality, iec61850.mms, iec61850.mms.rcb, iec61850.mms.types\n"
         "bad = {'scapy', 'pcapy', 'fastapi', 'flask'} & set(sys.modules)\n"
         "assert not bad, bad\n"
     )

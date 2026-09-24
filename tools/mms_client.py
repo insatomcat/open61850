@@ -21,10 +21,11 @@ import argparse
 import queue
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from iec61850.data import IECData  # noqa: E402
+from iec61850.data import BitStringData, IECData, TimestampData  # noqa: E402
 from iec61850.mms import (  # noqa: E402
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
@@ -34,8 +35,11 @@ from iec61850.mms import (  # noqa: E402
     ObjectName,
     decode_report,
     is_report,
+    MmsType,
     rcb,
 )
+from iec61850.mms.types import label  # noqa: E402
+from iec61850.quality import Quality, TimeQuality  # noqa: E402
 
 
 def parse_name(text: str) -> ObjectName:
@@ -92,9 +96,11 @@ def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Qu
     if status is None:
         sys.exit(f"all instances are in use: {', '.join(c.item for c in candidates)}")
     members: list[ObjectName] = []
+    types: list[Optional[MmsType]] = []
     if status.dat_set and "/" in status.dat_set:
         ds_domain, ds_item = status.dat_set.split("/", 1)
         members = client.get_data_set_members(ObjectName(ds_item, ds_domain))
+        types = [_type_or_none(client, m) for m in members]
     settings = rcb.RcbSettings(intg_pd_ms=args.integrity_ms, purge_buf=True if rcb.is_buffered(status.rcb) else None)
     print(f"enabling {status.rcb} (RptID {status.rpt_id}, data set {status.dat_set}, {len(members)} members)")
     rcb.enable(client, status.rcb, settings)
@@ -111,9 +117,11 @@ def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Qu
             print(f"\n{report.rpt_id} seq={report.seq_num} time={report.time_of_entry} "
                   f"ds={report.data_set} bufOvfl={report.buf_ovfl}")
             for entry in report.entries:
-                label = str(members[entry.index]) if entry.index < len(members) else f"[{entry.index}]"
+                name = str(members[entry.index]) if entry.index < len(members) else f"[{entry.index}]"
+                mms_type = types[entry.index] if entry.index < len(types) else None
                 reason = [k for k, v in vars(entry.reason).items() if v] if entry.reason else []
-                print(f"  {label} = {_short(entry.value)}  {','.join(reason)}")
+                print(f"  {name}  ({','.join(reason)})")
+                print(f"      {format_value(entry.value, mms_type)}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -122,9 +130,30 @@ def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Qu
             print(f"\ndisabled {status.rcb}")
 
 
-def _short(value: IECData) -> str:
-    text = repr(value)
-    return text if len(text) < 160 else text[:157] + "..."
+def _type_or_none(client: MmsClient, name: ObjectName) -> Optional[MmsType]:
+    try:
+        return client.get_type(name)
+    except MmsError:
+        return None
+
+
+def format_leaf(path: str, value: IECData) -> str:
+    last = path.rsplit(".", 1)[-1]
+    if isinstance(value, BitStringData) and last == "q":
+        return str(Quality.from_bitstring(value))
+    if isinstance(value, TimestampData):
+        text = value.value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        return f"{text} [{TimeQuality.from_octet(value.quality)}]"
+    if isinstance(value, BitStringData):
+        return f"bits:{value.value.hex()}/{8 * len(value.value) - value.unused_bits}"
+    inner = getattr(value, "value", value)
+    return repr(inner) if isinstance(inner, str) else str(inner)
+
+
+def format_value(value: IECData, mms_type: Optional[MmsType]) -> str:
+    """One line with every leaf named after the member type."""
+    leaves = label(value, mms_type)
+    return "  ".join(f"{path}={format_leaf(path, leaf)}" if path else format_leaf(path, leaf) for path, leaf in leaves)
 
 
 def main() -> int:

@@ -36,6 +36,7 @@ from .errors import (
     ServiceError,
 )
 from .pdu import InformationReport, ObjectName
+from .types import MmsType, get_variable_access_attributes_response
 from .transport import IsoConnection
 
 InformationReportCallback = Callable[[InformationReport], None]
@@ -241,6 +242,13 @@ class MmsClient:
         (error,) = self.write_many([name], [value])
         if error is not None:
             raise error
+
+    def get_type(self, name: ObjectName) -> MmsType:
+        """Type of a variable (GetVariableAccessAttributes)."""
+        content = self._service(
+            pdu.get_variable_access_attributes_request(name), pdu.SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES
+        )
+        return get_variable_access_attributes_response(content)
 
     def get_data_set_members(self, name: ObjectName) -> list[ObjectName]:
         """Members of a named variable list (an IEC 61850 data set)."""
