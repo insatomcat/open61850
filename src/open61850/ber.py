@@ -134,8 +134,15 @@ def encode_tlv(tag: int, content: bytes = b"") -> bytes:
 
 
 def decode_tlv(data: bytes, offset: int = 0) -> Tlv:
-    tag, offset = decode_tag(data, offset)
-    length, offset = decode_length(data, offset)
+    # Fast path for a low tag number and a short length, the usual case on the
+    # process bus (SV decoding runs thousands of times per second).
+    if offset + 2 <= len(data) and data[offset] & 0x1F != 0x1F and data[offset + 1] < 0x80:
+        tag = data[offset]
+        length = data[offset + 1]
+        offset += 2
+    else:
+        tag, offset = decode_tag(data, offset)
+        length, offset = decode_length(data, offset)
     end = offset + length
     if end > len(data):
         raise BerError(f"TLV 0x{tag:X} truncated: needs {length} bytes, {len(data) - offset} left")

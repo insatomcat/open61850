@@ -79,8 +79,32 @@ def _fixed(content: bytes, size: int, name: str) -> int:
     return int.from_bytes(content, "big")
 
 
+def _asdu_fields(content: bytes) -> dict[int, bytes]:
+    """Content of each ASDU field by context number ([0]..[9], tags 0x80..0x89).
+
+    A direct loop over the TLVs: this runs for every ASDU at several thousand
+    frames per second. Long lengths and high tag numbers go through ``ber``.
+    """
+    fields: dict[int, bytes] = {}
+    offset, size = 0, len(content)
+    while offset < size:
+        if offset + 2 <= size and content[offset + 1] < 0x80 and content[offset] & 0x1F != 0x1F:
+            tag = content[offset]
+            start = offset + 2
+            end = start + content[offset + 1]
+            if end > size:
+                raise SvDecodeError(f"ASDU field 0x{tag:X} truncated")
+            fields[tag - 0x80] = content[start:end]
+        else:
+            tlv = ber.decode_tlv(content, offset)
+            tag, end = tlv.tag, tlv.end
+            fields[tag - 0x80] = tlv.value
+        offset = end
+    return fields
+
+
 def _decode_asdu(content: bytes) -> SvAsdu:
-    fields: dict[int, bytes] = {ber.tag_number(t.tag): t.value for t in ber.iter_tlvs(content)}
+    fields = _asdu_fields(content)
     for number, name in ((0, "svID"), (2, "smpCnt"), (3, "confRev"), (5, "smpSynch"), (7, "sample")):
         if number not in fields:
             raise SvDecodeError(f"ASDU without {name}")

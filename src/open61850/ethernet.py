@@ -34,7 +34,7 @@ def mac_to_bytes(mac: str) -> bytes:
 
 
 def mac_to_str(mac: bytes) -> str:
-    return ":".join(f"{b:02x}" for b in mac)
+    return bytes(mac).hex(":")
 
 
 @dataclass(frozen=True)

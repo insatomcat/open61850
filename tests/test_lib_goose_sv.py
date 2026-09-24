@@ -148,3 +148,15 @@ def test_sv_no_asdu_mismatch() -> None:
     apdu[4] = 2  # noASDU says 2, one ASDU present
     with pytest.raises(sv.SvDecodeError, match="noASDU=2"):
         sv.decode_sv_pdu(bytes(apdu))
+
+
+def test_sv_long_sample_uses_the_long_length_form() -> None:
+    # 16 channels = 128 bytes: seqData needs 81 80, outside the short-length fast path.
+    values = [(i, 0) for i in range(16)]
+    asdu = sv.SvAsdu("SV_16", 1, 1, 2, sv.encode_int32_samples(values), smp_rate=4800)
+    raw = sv.encode_sv_pdu(sv.SvPDU([asdu]))
+    assert bytes.fromhex("878180") in raw
+    (decoded,) = sv.decode_sv_pdu(raw).asdus
+    assert decoded == asdu and sv.decode_int32_samples(decoded.sample) == values
+    with pytest.raises(sv.SvDecodeError):
+        sv.decode_sv_pdu(raw[:-3])
