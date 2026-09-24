@@ -7,15 +7,32 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .data import BitStringData, IECData, TimestampData
+from .data import BitStringData, IECData, OctetStringData, TimestampData
 from .mms.types import MmsType, label
 from .quality import Quality, TimeQuality
 
 
+DBPOS = ("intermediate", "off", "on", "bad")
+_OCTETS_SHOWN = 16
+
+
 def format_leaf(path: str, value: IECData) -> str:
-    """One primitive value; ``q`` leaves are shown as Quality, timestamps with their TimeQuality."""
-    if isinstance(value, BitStringData) and path.rsplit(".", 1)[-1] == "q":
+    """One primitive value.
+
+    ``q`` leaves are shown as Quality, 2-bit ``stVal`` leaves as a double point
+    position (Dbpos), timestamps with their TimeQuality.
+    """
+    last = path.rsplit(".", 1)[-1]
+    if isinstance(value, BitStringData) and last == "q":
         return str(Quality.from_bitstring(value))
+    if isinstance(value, BitStringData) and last == "stVal" and 8 * len(value.value) - value.unused_bits == 2:
+        return DBPOS[value.value[0] >> 6]
+    if isinstance(value, OctetStringData):
+        if value.value and not any(value.value):
+            return f"zeros({len(value.value)})"
+        if len(value.value) > _OCTETS_SHOWN:
+            return f"0x{value.value[:_OCTETS_SHOWN].hex()}...({len(value.value)} bytes)"
+        return f"0x{value.value.hex()}"
     if isinstance(value, TimestampData):
         text = value.value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         return f"{text} [{TimeQuality.from_octet(value.quality)}]"

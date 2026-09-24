@@ -101,3 +101,16 @@ def test_format_value() -> None:
         "cVal.mag.f=0.0  cVal.ang.f=0.0  range=0  rangeAng=0  q=invalid,failure  "
         "t=2026-09-24 09:19:15.501 [clock-failure,not-synchronized,accuracy=7bits]"
     )
+
+
+def test_format_positions_and_octet_strings() -> None:
+    from iec61850.data import OctetStringData
+    from iec61850.display import format_leaf
+
+    assert format_leaf("stVal", BitStringData(b"\x80", 6)) == "on"
+    assert format_leaf("stVal", BitStringData(b"\x40", 6)) == "off"
+    assert format_leaf("stVal", BitStringData(b"\x00", 6)) == "intermediate"
+    assert format_leaf("stVal", BitStringData(b"\xc0", 6)) == "bad"
+    assert format_leaf("origin.orIdent", OctetStringData(bytes(64))) == "zeros(64)"
+    assert format_leaf("orIdent", OctetStringData(bytes.fromhex("13d5c007"))) == "0x13d5c007"
+    assert format_leaf("x", OctetStringData(bytes(range(1, 21)))) == "0x" + bytes(range(1, 17)).hex() + "...(20 bytes)"
