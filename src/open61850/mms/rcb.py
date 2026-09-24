@@ -10,6 +10,7 @@ several instances of the same block, one per client (``CB_X01``,
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -71,6 +72,27 @@ class RcbStatus:
     dat_set: Optional[str] = None
 
     @property
+    def reserved_by_configuration(self) -> bool:
+        """ResvTms = -1: the server assigned the block to a given client (SCL ClientLN)."""
+        return self.resv_tms == -1
+
+    def describe(self) -> str:
+        """Short state: ``free``, or why the block is in use."""
+        reasons = []
+        if self.rpt_ena:
+            reasons.append("enabled")
+        if self.resv:
+            reasons.append("reserved")
+        if self.reserved_by_configuration:
+            reasons.append("assigned by configuration")
+        elif self.resv_tms not in (None, 0):
+            reasons.append(f"reserved {self.resv_tms}s")
+        if not reasons:
+            return "free"
+        owner = _format_owner(self.owner)
+        return ", ".join(reasons) + (f", owner {owner}" if owner else "")
+
+    @property
     def free(self) -> bool:
         """Neither enabled nor reserved by another client."""
         if self.rpt_ena:
@@ -83,6 +105,17 @@ class RcbStatus:
 
 
 _STATUS_ATTRIBUTES = ("RptEna", "RptID", "DatSet", "Owner")
+
+
+def _format_owner(owner: Optional[bytes]) -> Optional[str]:
+    """Owner holds the client address; all zeros means none."""
+    if not owner or not any(owner):
+        return None
+    if len(owner) == 4:
+        return ".".join(str(b) for b in owner)
+    if len(owner) == 16:
+        return str(ipaddress.IPv6Address(owner))
+    return owner.hex()
 
 
 def read_status(client: MmsClient, rcb: ObjectName) -> RcbStatus:
@@ -134,7 +167,10 @@ class RcbSettings:
     )
     intg_pd_ms: Optional[int] = 2000
     buf_tm_ms: Optional[int] = None
-    resv_tms: Optional[int] = None  # BRCB reservation time in seconds (edition 2)
+    # BRCB reservation (edition 2), in seconds it survives a lost association.
+    # Written first: servers refuse configuration writes from a client that has
+    # not reserved the block (the VMC7 answers temporarily-unavailable).
+    resv_tms: Optional[int] = 5
     purge_buf: Optional[bool] = None  # BRCB only
     entry_id: Optional[bytes] = None  # BRCB only
     general_interrogation: bool = True

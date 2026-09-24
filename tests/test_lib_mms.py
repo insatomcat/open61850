@@ -427,6 +427,16 @@ def test_find_free_instance(serve: Callable[..., tuple[MmsClient, FakeServer]]) 
     status = rcb.find_free(client, candidates)
     assert status is not None and status.rcb == candidates[2]
     assert (status.rpt_id, status.dat_set, status.owner) == ("id3", "LD0/LLN0$DS1", None)
+    assert rcb.read_status(client, candidates[1]).describe() == "reserved 30s"
+
+
+def test_status_description() -> None:
+    brcb = ObjectName("LLN0$BR$CB01", "LD0")
+    assert rcb.RcbStatus(brcb, rpt_ena=False, resv_tms=0).describe() == "free"
+    assert rcb.RcbStatus(brcb, rpt_ena=True, resv_tms=-1, owner=bytes([10, 1, 2, 3])).describe() == (
+        "enabled, assigned by configuration, owner 10.1.2.3"
+    )
+    assert not rcb.RcbStatus(brcb, rpt_ena=False, resv_tms=-1, owner=bytes(4)).free
 
 
 def test_enable_writes_typed_values_in_order(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
@@ -445,6 +455,13 @@ def test_enable_writes_typed_values_in_order(serve: Callable[..., tuple[MmsClien
         ("RptEna", BoolData(True)),
         ("GI", BoolData(True)),
     ]
+
+
+def test_enable_reserves_a_brcb_first_by_default(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    model = FakeModel(_brcb_values(1, enabled=False))
+    client, _ = serve(model)
+    rcb.enable(client, ObjectName(f"{BRCB}1", "LD0"))
+    assert model.writes[0] == (f"{BRCB}1$ResvTms", IntData(5))
 
 
 def test_enable_reports_the_failing_attribute(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:

@@ -63,12 +63,10 @@ def cmd_rcbs(client: MmsClient, args: argparse.Namespace) -> None:
         if not args.status:
             print(f"{domain}/{base}  x{len(members)}")
             continue
-        states = []
+        print(f"{domain}/{base}")
         for member in members:
             status = rcb.read_status(client, member)
-            suffix = member.item[len(base):]
-            states.append(f"{suffix}:{'free' if status.free else 'used'}")
-        print(f"{domain}/{base}  {' '.join(states)}")
+            print(f"    {member.item[len(base):]}: {status.describe()}")
 
 
 def cmd_read(client: MmsClient, args: argparse.Namespace) -> None:
