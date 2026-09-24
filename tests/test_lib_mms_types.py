@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timezone
 
-from conftest import DATA_DIR, ROOT
+from conftest import DATA_DIR
 
 from iec61850 import ber
 from iec61850.data import BitStringData, BoolData, FloatData, IntData, StructureData, TimestampData
@@ -23,8 +22,7 @@ from iec61850.mms.types import (
 )
 from iec61850.quality import Quality, TimeQuality
 
-sys.path.insert(0, str(ROOT / "tools"))
-import mms_client  # noqa: E402
+from iec61850.display import format_value
 
 SERVICES = json.loads((DATA_DIR / "iedscout_services.json").read_text())
 
@@ -98,8 +96,8 @@ def test_quality_and_time_quality() -> None:
     assert str(TimeQuality.from_octet(0x0A)) == "accuracy=10bits"
 
 
-def test_cli_formats_a_member() -> None:
-    assert mms_client.format_value(CMV_VALUE, CMV_TYPE) == (
+def test_format_value() -> None:
+    assert format_value(CMV_VALUE, CMV_TYPE) == (
         "cVal.mag.f=0.0  cVal.ang.f=0.0  range=0  rangeAng=0  q=invalid,failure  "
         "t=2026-09-24 09:19:15.501 [clock-failure,not-synchronized,accuracy=7bits]"
     )

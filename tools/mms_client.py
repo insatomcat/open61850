@@ -25,7 +25,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from iec61850.data import BitStringData, IECData, TimestampData  # noqa: E402
+from iec61850.display import format_value  # noqa: E402
 from iec61850.mms import (  # noqa: E402
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
@@ -38,8 +38,6 @@ from iec61850.mms import (  # noqa: E402
     MmsType,
     rcb,
 )
-from iec61850.mms.types import label  # noqa: E402
-from iec61850.quality import Quality, TimeQuality  # noqa: E402
 
 
 def parse_name(text: str) -> ObjectName:
@@ -135,25 +133,6 @@ def _type_or_none(client: MmsClient, name: ObjectName) -> Optional[MmsType]:
         return client.get_type(name)
     except MmsError:
         return None
-
-
-def format_leaf(path: str, value: IECData) -> str:
-    last = path.rsplit(".", 1)[-1]
-    if isinstance(value, BitStringData) and last == "q":
-        return str(Quality.from_bitstring(value))
-    if isinstance(value, TimestampData):
-        text = value.value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        return f"{text} [{TimeQuality.from_octet(value.quality)}]"
-    if isinstance(value, BitStringData):
-        return f"bits:{value.value.hex()}/{8 * len(value.value) - value.unused_bits}"
-    inner = getattr(value, "value", value)
-    return repr(inner) if isinstance(inner, str) else str(inner)
-
-
-def format_value(value: IECData, mms_type: Optional[MmsType]) -> str:
-    """One line with every leaf named after the member type."""
-    leaves = label(value, mms_type)
-    return "  ".join(f"{path}={format_leaf(path, leaf)}" if path else format_leaf(path, leaf) for path, leaf in leaves)
 
 
 def main() -> int:
