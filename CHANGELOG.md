@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- `open61850-sv` (`python -m open61850.sv_publisher`): publishes one SV stream
+  until stopped, with the options of PO's rt_sender (addresses, APPID,
+  confRev, smpSynch, VLAN, three-phase waveform, periodic phase A fault) plus
+  the rate, ASDUs per frame, data set layout, simulation bit, real-time
+  priority, CPU and engine.
+
 ## 0.2.0
 
 - Sampled Values publication (`open61850.sv_publisher`, re-exported by

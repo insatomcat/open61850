@@ -34,8 +34,11 @@ same bytes as :func:`render_frame` (the tests check it).
 
 from __future__ import annotations
 
+import argparse
 import math
+import signal
 import socket
+import sys
 import struct
 import threading
 import time
@@ -57,6 +60,7 @@ __all__ = [
     "render_frame",
     "sample_values",
     "native_available",
+    "main",
 ]
 
 SIMULATION_BIT = 0x8000  # Reserved1 bit 15 (IEC 61850-9-2 Ed2.1): the stream is simulated
@@ -451,3 +455,99 @@ class _PythonEngine:
                     if lateness > period_ns:
                         s["late_frames"] += sent
                 k += 1
+
+
+# --- command line ------------------------------------------------------------
+
+
+def _int_auto(text: str) -> int:
+    return int(text, 0)
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="open61850-sv",
+        description="Publish one Sampled Values stream until stopped (SIGINT or SIGTERM). "
+        "Options follow PO's rt_sender; waveforms are aligned on the UNIX epoch.",
+    )
+    p.add_argument("iface")
+    p.add_argument("src_mac")
+    p.add_argument("dst_mac")
+    p.add_argument("svid")
+    p.add_argument("--appid", type=_int_auto, required=True)
+    p.add_argument("--conf-rev", type=_int_auto, required=True)
+    p.add_argument("--smp-synch", type=int, default=0, choices=(0, 1, 2))
+    p.add_argument("--vlan-id", type=int)
+    p.add_argument("--vlan-priority", type=int, default=0)
+    p.add_argument("--dat-set")
+    p.add_argument("--simulation", action="store_true", help="set the Simulate bit (Reserved1)")
+    p.add_argument("--rate", type=int, default=4800, help="samples per second (default 4800)")
+    p.add_argument("--asdus", type=int, default=2, help="ASDUs per frame (default 2)")
+    p.add_argument("--layout", default="6I3U", choices=("6I3U", "4I4U"))
+    p.add_argument("--freq", type=float, default=50.0, help="Hz; 0 sends zeros")
+    p.add_argument("--zero", action="store_true", help="send zeros")
+    p.add_argument("--i-peak", type=float, default=10.0, help="peak current, A")
+    p.add_argument("--v-peak", type=float, default=100.0, help="peak phase voltage, V")
+    p.add_argument("--phase", type=float, default=0.0, help="current lag behind voltage, degrees")
+    p.add_argument("--fault", action="store_true", help="periodic fault on phase A")
+    p.add_argument("--fault-i-peak", type=float, default=0.0)
+    p.add_argument("--fault-v-peak", type=float, default=0.0)
+    p.add_argument("--fault-phase", type=float, default=0.0, help="phase A current lag during the fault")
+    p.add_argument("--fault-cycle", type=int, default=2, help="seconds between fault starts")
+    p.add_argument("--fault-smpcnt", type=int, default=0, help="smpCnt of the first fault sample")
+    p.add_argument("--fault-offset", type=int, default=0, help="seconds into the cycle")
+    p.add_argument("--rt-priority", type=int, help="SCHED_FIFO priority of the sending thread (native engine)")
+    p.add_argument("--cpu", type=int, help="pin the sending thread to this CPU (native engine)")
+    p.add_argument("--engine", default="auto", choices=("auto", "native", "python"))
+    p.add_argument("--duration", type=float, help="stop after this many seconds")
+    p.add_argument("--dump", action="store_true", help="print the first frame in hex and exit")
+    return p
+
+
+def stream_from_args(args: argparse.Namespace) -> SvStream:
+    freq = 0.0 if args.zero else args.freq
+    waves = three_phase(i_peak=args.i_peak, v_peak=args.v_peak, freq_hz=freq, i_lag_deg=args.phase, layout=args.layout)
+    if freq == 0.0:
+        waves = tuple(Wave(freq_hz=0.0, scale=w.scale) for w in waves)
+    fault = None
+    if args.fault:
+        fault_waves = three_phase(i_peak=args.i_peak, v_peak=args.v_peak, freq_hz=freq, i_lag_deg=args.phase,
+                                  layout=args.layout, ia_peak=args.fault_i_peak, ia_lag_deg=args.fault_phase,
+                                  va_peak=args.fault_v_peak)
+        if freq == 0.0:
+            fault_waves = waves
+        fault = Fault(fault_waves, cycle_s=args.fault_cycle, offset_s=args.fault_offset, start_smp=args.fault_smpcnt)
+    return SvStream(
+        sv_id=args.svid, app_id=args.appid, dst_mac=args.dst_mac, src_mac=args.src_mac, waves=waves,
+        conf_rev=args.conf_rev, smp_synch=args.smp_synch, vlan_id=args.vlan_id,
+        vlan_priority=args.vlan_priority if args.vlan_id is not None else None,
+        dat_set=args.dat_set, simulation=args.simulation, fault=fault,
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = _parser().parse_args(argv)
+    stream = stream_from_args(args)
+    if args.dump:
+        template = build_template(stream, args.asdus, args.rate)
+        print(render_frame(template, stream, int(time.time()), 0, args.rate).hex())
+        return 0
+    publisher = Publisher(args.iface, rate=args.rate, asdus_per_frame=args.asdus, engine=args.engine,
+                          rt_priority=args.rt_priority, cpu=args.cpu)
+    publisher.add(stream)
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    start = int(time.time()) + 1
+    publisher.start(at_second=start)
+    vlan = f"VLAN {args.vlan_id} priority {args.vlan_priority}" if args.vlan_id is not None else "no VLAN"
+    print(f"open61850-sv: {args.svid} APPID 0x{args.appid:04x} on {args.iface} ({vlan}), {args.rate} samples/s, "
+          f"{args.asdus} ASDUs per frame, {args.layout}, engine {publisher.engine_name}, from {start}", file=sys.stderr)
+    stop.wait(None if args.duration is None else max(0.0, start + args.duration - time.time()))
+    publisher.stop()
+    print(f"open61850-sv: {publisher.stats()}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

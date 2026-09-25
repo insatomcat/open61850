@@ -170,3 +170,25 @@ def test_python_engine_sends_every_sample_on_time() -> None:
     assert 0 <= min(lateness) and max(lateness) < 0.02
     stats = publisher.stats()
     assert stats.engine == "python" and stats.frames_sent >= rate // 2 and stats.send_errors == 0
+
+
+def test_command_line_matches_rt_sender_options(capsys: pytest.CaptureFixture[str]) -> None:
+    from open61850.sv_publisher import _parser, main, stream_from_args
+
+    args = _parser().parse_args(
+        "processbus 02:00:00:00:0f:01 01:0c:cd:04:0f:01 IED01_TEST_SV1 --appid 0x4F01 --conf-rev 20000 --smp-synch 2 "
+        "--vlan-id 105 --vlan-priority 5 --freq 50 --i-peak 354 --v-peak 51440 --phase 20 --fault --fault-i-peak 5000 "
+        "--fault-v-peak 20000 --fault-phase 80 --fault-cycle 4 --fault-smpcnt 24 --fault-offset 1".split()
+    )
+    stream = stream_from_args(args)
+    assert (stream.app_id, stream.conf_rev, stream.smp_synch, stream.vlan_id, stream.vlan_priority) == (0x4F01, 20000, 2, 105, 5)
+    for sec, smp in [(1_790_000_000, 0), (1_790_000_001, 30), (1_790_000_002, 2400)]:
+        fault = _rt_sender_in_fault(sec, smp, 4, 1, 24)
+        theirs = _rt_sender_6i3u(smp, 50, 354, 51440, 20, fault, 5000, 20000, 80)
+        ours = sample_values(stream, sec, smp, RATE)
+        assert ours[:3] + ours[4:] == theirs[:3] + theirs[4:] and abs(ours[3] - theirs[3]) <= 1
+    zero = stream_from_args(_parser().parse_args("lo 02:00:00:00:00:01 01:0c:cd:04:00:01 SV --appid 1 --conf-rev 1 --zero".split()))
+    assert sample_values(zero, 1_790_000_000, 7, RATE) == [0] * 9
+    assert main("lo 02:00:00:00:00:01 01:0c:cd:04:00:01 SV --appid 1 --conf-rev 1 --dump".split()) == 0
+    raw = bytes.fromhex(capsys.readouterr().out.strip())
+    assert sv.decode_sv_frame(raw)[1].asdus[0].sv_id == "SV"  # type: ignore[index]

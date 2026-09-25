@@ -131,6 +131,14 @@ open61850-mms 192.0.2.10 operate 'IED01_BayLD/CBCSWI1$CO$Pos' open
 
 `subscribe` takes a block or a group name without its instance number, picks a free instance, prints the decoded reports and releases the block on Ctrl-C.
 
+```bash
+sudo open61850-sv eth1 02:00:00:00:00:01 01:0c:cd:04:00:01 MU01_SV1 --appid 0x4000 --conf-rev 1 \
+  --smp-synch 2 --vlan-id 100 --vlan-priority 4 --i-peak 10 --v-peak 100 --phase 30 \
+  --fault --fault-i-peak 50 --fault-v-peak 20 --fault-cycle 4 --rt-priority 80
+```
+
+`open61850-sv` publishes one SV stream until stopped (`--duration` to stop by itself, `--dump` to print one frame).
+
 ## Scope and limits
 
 - No MMS server; GOOSE is encoded and decoded, but publishing it (retransmission scheme) is up to the application.
