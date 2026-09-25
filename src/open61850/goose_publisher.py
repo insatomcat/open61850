@@ -21,7 +21,10 @@ messages.
         ...
         pub.publish([BoolData(True)])   # trip
 
-Linux, AF_PACKET (root or CAP_NET_RAW), unless ``send`` is given.
+Linux, AF_PACKET (root or CAP_NET_RAW), unless ``send`` is given. The
+sending thread wakes up with the precision of ``threading.Condition.wait``:
+on a loaded machine a fast repetition (a few ms) can go out tens of ms
+late, past its timeAllowedtoLive; raise ``min_time_ms`` there.
 ``open61850-goose`` (``python -m open61850.goose_publisher``) publishes from
 the command line, with new values read from standard input.
 """
