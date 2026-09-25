@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server executes controls: direct and select-before-operate, normal
+  and enhanced security (CommandTermination, LastApplError), selection
+  timeout, Cancel, Test, time-activated operate; handlers decide what a
+  command does (by default ctlVal goes to stVal). libiec61850's control
+  client operates it.
+- `operate(..., oper_tm=...)` and `oper_value(..., oper_tm=...)`:
+  time-activated controls (an Oper with operTm).
+
 ## 0.5.0 (2026-09-25)
 
 - `open61850.server`: an MMS server. `IedModel.from_scl` builds typed values,

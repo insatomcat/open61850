@@ -439,3 +439,27 @@ def test_libiec61850_gets_reports_from_our_server(our_server) -> None:
     assert any("(included for reason 1)" in r for r in reports[1:])  # the data change
     status = our_server.model.get(f"{LD}/LLN0$RP$EventsRCB01$RptEna")
     assert status.value is False
+
+
+def test_libiec61850_operates_our_server() -> None:
+    from open61850.server import IedModel, MmsServer
+
+    model = IedModel.from_scl(f"{SCL_DIR}/simpleIO_control_tests.cid")
+    with MmsServer(model, "127.0.0.1", OUR_PORT) as server:
+        server.start()
+        server.controls.set_handler(f"{LD}/GGIO1.SPCSO9", lambda command: 10)  # blocked-by-interlocking
+        out = _client("client_example_control", "127.0.0.1", str(OUR_PORT))
+    for do in ("SPCSO1", "SPCSO2", "SPCSO3", "SPCSO4", "SPCSO9"):
+        assert f"{LD}/GGIO1.{do} operated successfully" in out, out
+    assert out.count("Received CommandTermination+.") == 2  # SPCSO3, SPCSO4 (enhanced security)
+    assert "Received CommandTermination-." in out and "addCause: 10" in out  # SPCSO9
+    assert "failed" not in out
+
+
+@pytest.mark.parametrize("do", ["SPCSO5", "SPCSO6", "SPCSO7", "SPCSO8"])
+def test_time_activated_controls(control_server, do: str) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    with MmsClient.connect("127.0.0.1", CONTROL) as client:
+        result = operate(client, f"{LD}/GGIO1.{do}", True, oper_tm=datetime.now(timezone.utc) + timedelta(seconds=0.2))
+        assert result.terminated == (do in ("SPCSO7", "SPCSO8"))

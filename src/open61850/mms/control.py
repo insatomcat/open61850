@@ -253,11 +253,18 @@ def oper_value(
     synchro_check: bool = True,
     t: Optional[datetime] = None,
     time_quality: int = DEFAULT_TIME_QUALITY,
+    oper_tm: Optional[datetime] = None,
 ) -> StructureData:
-    """The Oper / SBOw structure {ctlVal, origin, ctlNum, T, Test, Check}."""
+    """The Oper / SBOw structure {ctlVal, [operTm], origin, ctlNum, T, Test, Check}.
+
+    ``oper_tm`` is for time-activated controls, whose Oper carries operTm:
+    the time the command is to execute.
+    """
     check = (0x80 if synchro_check else 0) | (0x40 if interlock_check else 0)
+    activation = [TimestampData(oper_tm, quality=time_quality)] if oper_tm is not None else []
     return StructureData([
         _ctl_value(ctl_val),
+        *activation,
         origin.to_data(),
         UIntData(ctl_num & 0xFF),
         TimestampData(t or datetime.now(timezone.utc), quality=time_quality),
@@ -334,10 +341,12 @@ def operate(
     ctl_model: Optional[int] = None,
     termination_timeout: float = 5.0,
     error_grace: float = 0.5,
+    oper_tm: Optional[datetime] = None,
 ) -> ControlResult:
     """Run one command on ``name`` (``X$CO$Pos``, ``X$CO$Pos$Oper`` or ``LD/X.Pos``).
 
-    ``ctl_model`` is read from ``X$CF$Pos$ctlModel`` when not given. Raises
+    ``ctl_model`` is read from ``X$CF$Pos$ctlModel`` when not given;
+    ``oper_tm`` makes a time-activated command (an Oper with operTm). Raises
     :class:`ControlError` when the server refuses the command or reports a
     negative CommandTermination, or when no termination arrives in time.
     """
@@ -355,7 +364,7 @@ def operate(
         def value() -> StructureData:
             return oper_value(
                 ctl_val, origin=origin, ctl_num=ctl_num, test=test,
-                interlock_check=interlock_check, synchro_check=synchro_check,
+                interlock_check=interlock_check, synchro_check=synchro_check, oper_tm=oper_tm,
             )
 
         if ctl_model == CTL_MODEL_SBO_NORMAL:

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Florent Carli, SPDX-License-Identifier: Apache-2.0. Switch controls for tests/test_server.py. -->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+  <IED name="IED01">
+    <AccessPoint name="AP1"><Server><LDevice inst="CTRL">
+      <LN0 lnClass="LLN0" inst="" lnType="LLN0_T"/>
+      <LN lnClass="CSWI" inst="1" lnType="CSWI_T"><DOI name="Pos"><DAI name="ctlModel"><Val>direct-with-normal-security</Val></DAI></DOI></LN>
+      <LN lnClass="CSWI" inst="2" lnType="CSWI_T"><DOI name="Pos"><DAI name="ctlModel"><Val>sbo-with-normal-security</Val></DAI>
+        <DAI name="sboTimeout"><Val>300</Val></DAI></DOI></LN>
+      <LN lnClass="CSWI" inst="3" lnType="CSWI_T"><DOI name="Pos"><DAI name="ctlModel"><Val>direct-with-enhanced-security</Val></DAI></DOI></LN>
+      <LN lnClass="CSWI" inst="4" lnType="CSWI_T"><DOI name="Pos"><DAI name="ctlModel"><Val>sbo-with-enhanced-security</Val></DAI></DOI></LN>
+      <LN lnClass="CSWI" inst="5" lnType="CSWI_T"/>
+    </LDevice></Server></AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_T" lnClass="LLN0"><DO name="Mod" type="INC_T"/></LNodeType>
+    <LNodeType id="CSWI_T" lnClass="CSWI"><DO name="Pos" type="DPC_T"/></LNodeType>
+    <DOType id="INC_T" cdc="INC">
+      <DA name="stVal" bType="INT32" fc="ST" dchg="true"/>
+    </DOType>
+    <DOType id="DPC_T" cdc="DPC">
+      <DA name="origin" bType="Struct" type="Originator_T" fc="ST"/>
+      <DA name="ctlNum" bType="INT8U" fc="ST"/>
+      <DA name="stVal" bType="Dbpos" fc="ST" dchg="true"><Val>off</Val></DA>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="SBO" bType="ObjRef" fc="CO"/>
+      <DA name="SBOw" bType="Struct" type="Oper_T" fc="CO"/>
+      <DA name="Oper" bType="Struct" type="Oper_T" fc="CO"/>
+      <DA name="Cancel" bType="Struct" type="Cancel_T" fc="CO"/>
+      <DA name="ctlModel" bType="Enum" type="CtlModels" fc="CF"><Val>status-only</Val></DA>
+      <DA name="sboTimeout" bType="INT32U" fc="CF"/>
+    </DOType>
+    <DAType id="Originator_T">
+      <BDA name="orCat" bType="Enum" type="OrCat"/>
+      <BDA name="orIdent" bType="Octet64"/>
+    </DAType>
+    <DAType id="Oper_T">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+      <BDA name="Check" bType="Check"/>
+    </DAType>
+    <DAType id="Cancel_T">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+    </DAType>
+    <EnumType id="CtlModels">
+      <EnumVal ord="0">status-only</EnumVal><EnumVal ord="1">direct-with-normal-security</EnumVal>
+      <EnumVal ord="2">sbo-with-normal-security</EnumVal><EnumVal ord="3">direct-with-enhanced-security</EnumVal>
+      <EnumVal ord="4">sbo-with-enhanced-security</EnumVal>
+    </EnumType>
+    <EnumType id="OrCat"><EnumVal ord="0">not-supported</EnumVal><EnumVal ord="2">station-control</EnumVal></EnumType>
+  </DataTypeTemplates>
+</SCL>

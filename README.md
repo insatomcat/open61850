@@ -1,10 +1,10 @@
 # open61850
 
-IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), an MMS server with reports, GOOSE and Sampled Values codecs, supervision of GOOSE and SV streams, Sampled Values publication with a real-time engine, an SCL reader, pcap/pcapng files and a Linux capture for the process bus. The library is pure Python (standard library only, Python 3.10 or later); the optional real-time engine is in Rust.
+IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), an MMS server with reports and controls, GOOSE and Sampled Values codecs, supervision of GOOSE and SV streams, Sampled Values publication with a real-time engine, an SCL reader, pcap/pcapng files and a Linux capture for the process bus. The library is pure Python (standard library only, Python 3.10 or later); the optional real-time engine is in Rust.
 
 It was written for a test and diagnostic platform of a digital substation process bus, and checked there against real IEDs (a Schneider VMC7 and an ABB SSC600). The other open-source IEC 61850 stack, libiec61850, is GPL; open61850 is an alternative for projects that cannot take a GPL dependency.
 
-**Status**: alpha. The MMS client, GOOSE and SV publication and supervision, SCL and COMTRADE are what exist; each is tested, against two IED families and, in CI, against libiec61850. The MMS server serves data, data sets and reports; it does not execute controls yet. Until 1.0, minor versions may change the API.
+**Status**: alpha. The MMS client, GOOSE and SV publication and supervision, SCL and COMTRADE are what exist; each is tested, against two IED families and, in CI, against libiec61850. The MMS server serves data, data sets, reports and controls. Until 1.0, minor versions may change the API.
 
 ## Installation
 
@@ -23,7 +23,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.mms.report` | IEC 61850 report decoding driven by the report's own OptFlds and inclusion bit string (segmentation, reason codes, data references) |
 | `open61850.mms.rcb` | Report control blocks: status, free instance, reservation (edition 1 and 2 BRCBs, URCBs), enabling with checked writes, release |
 | `open61850.mms.control` | Controls: direct and select-before-operate, normal and enhanced security (waits for the CommandTermination, reports the LastApplError AddCause) |
-| `open61850.server` | MMS server: the data model of an SCL file (typed values, data sets, control blocks) served over TCP, GetNameList, Read, Write, type and data set descriptions, buffered and unbuffered reports (reservation, TrgOps, BufTm, integrity, GI, EntryID replay); values set by the application |
+| `open61850.server` | MMS server: the data model of an SCL file (typed values, data sets, control blocks) served over TCP, GetNameList, Read, Write, type and data set descriptions, buffered and unbuffered reports (reservation, TrgOps, BufTm, integrity, GI, EntryID replay), controls in the four control models (selection, CommandTermination, LastApplError, time-activated operate) with application handlers; values set by the application |
 | `open61850.goose` | GOOSE PDUs and frames (IEC 61850-8-1) |
 | `open61850.goose_publisher` | GOOSE publication: a new state sent at once then repeated after min time, doubling up to max time, timeAllowedtoLive three times the wait (as libiec61850) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
@@ -135,6 +135,8 @@ with MmsServer(model, port=102) as server:
     server.start()
     model.set("IED01LD0/MMXU1.TotW.mag.f[MX]", 1500.0)
     model.set("IED01LD0/XCBR1.Pos.stVal[ST]", 2)      # Dbpos on
+    # A command on CSWI1.Pos: refuse it, or return None to accept (the default copies ctlVal to stVal)
+    server.controls.set_handler("IED01LD0/CSWI1.Pos", lambda command: 10)   # blocked-by-interlocking
     ...
 ```
 
@@ -246,11 +248,11 @@ sudo open61850-supervise --live eth1
 
 ## Scope and limits
 
-- The MMS server does not execute controls (writes to CO are refused), and has no files, logs or setting groups.
+- The MMS server has no files, logs, setting groups or dynamic data sets.
 - SV publication sends sinusoids, periodic faults and recorded samples (captures, COMTRADE); samples computed live by the application are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
-- Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers, publishers and subscriber (model, reads, reports, the four control models, GOOSE both ways, SV), and libiec61850's clients against the open61850 server (browse, reads, writes, data sets, reports); reports of other IEDs are welcome.
+- Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers, publishers and subscriber (model, reads, reports, the four control models, GOOSE both ways, SV), and libiec61850's clients against the open61850 server (browse, reads, writes, data sets, reports, the four control models); reports of other IEDs are welcome.
 
 ## More examples
 

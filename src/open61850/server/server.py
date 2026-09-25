@@ -32,6 +32,7 @@ from ..mms.errors import MmsProtocolError
 from ..mms.pdu import ObjectName
 from ..mms.transport import IsoConnection, TransportError
 from . import protocol
+from .control import ControlEngine
 from .model import IedModel
 from .reporting import ReportEngine
 
@@ -55,6 +56,8 @@ class ServerConnection:
         self.mms_context = pdu.MMS_PRESENTATION_CONTEXT
         self.pdu_size = server.max_pdu_size
         self.closed = threading.Event()
+        # Run once the response to the current request has gone (a CommandTermination follows its write).
+        self.after_response: list[Callable[[], None]] = []
 
     @property
     def address(self) -> str:
@@ -112,7 +115,11 @@ class ServerConnection:
             response = self._service(request)
         except (MmsProtocolError, ber.BerError, KeyError, ValueError, IndexError):
             response = protocol.reject(request.invoke_id, reason=1, code=5)  # invalid-argument
+            self.after_response.clear()
         self.send(response)
+        actions, self.after_response = self.after_response, []
+        for action in actions:
+            action()
         return True
 
     def _service(self, request: protocol.ConfirmedRequest) -> bytes:
@@ -144,7 +151,7 @@ class ServerConnection:
                 results = [model.read(m) for m in members]
                 spec = ber.encode_tlv(0xA1, pdu.encode_object_name(variables)) if with_result else None
                 return protocol.confirmed_response(invoke, service, protocol.read_response(results, spec))
-            return protocol.confirmed_response(invoke, service, protocol.read_response([model.read(v) for v in variables]))
+            return protocol.confirmed_response(invoke, service, protocol.read_response([self._read(v) for v in variables]))
         if service == pdu.SERVICE_WRITE:
             variables, values = protocol.write_request(content)
             if isinstance(variables, ObjectName):
@@ -164,6 +171,13 @@ class ServerConnection:
             return protocol.confirmed_response(invoke, service, protocol.get_named_variable_list_attributes_response(members))
         return protocol.reject(invoke, reason=1, code=1)  # unrecognized-service
 
+    def _read(self, name: ObjectName) -> Union[IECData, int]:
+        for hook in self.server.read_hooks:
+            result = hook(self, name)
+            if result is not None:
+                return result
+        return self.server.model.read(name)
+
     def _write(self, name: ObjectName, value: IECData) -> Optional[int]:
         for hook in self.server.write_hooks:
             result = hook(self, name, value)
@@ -179,7 +193,7 @@ class MmsServer:
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
-                 max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True) -> None:
+                 max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True) -> None:
         self.model = model
         self.host = host
         self.port = port
@@ -189,6 +203,10 @@ class MmsServer:
         # None = not theirs (reports and controls plug in here).
         self.write_hooks: list[WriteHook] = []
         self.close_hooks: list[Callable[[ServerConnection], None]] = []
+        # Read hooks answer some reads themselves (a value or an error code), None = not theirs.
+        self.read_hooks: list[Callable[[ServerConnection, ObjectName], Optional[Union[IECData, int]]]] = []
+        self.controls_enabled = controls
+        self.controls: Optional[ControlEngine] = None
         self.reports_enabled = reports
         self.reports: Optional[ReportEngine] = None
         self.connections: list[ServerConnection] = []
@@ -212,6 +230,8 @@ class MmsServer:
     def start(self) -> None:
         if self.reports_enabled and self.reports is None:
             self.reports = ReportEngine(self)
+        if self.controls_enabled and self.controls is None:
+            self.controls = ControlEngine(self)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))

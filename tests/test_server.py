@@ -14,7 +14,7 @@ import pytest
 from conftest import DATA_DIR
 
 from open61850 import ber, scl
-from open61850.data import BoolData, IntData, OctetStringData, VisibleStringData
+from open61850.data import BoolData, IntData, OctetStringData, StructureData, UIntData, VisibleStringData
 from open61850.mms import (
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
@@ -259,3 +259,102 @@ def test_server_command_line() -> None:
     finally:
         process.terminate()
         process.wait(10)
+
+
+# --- controls --------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from open61850.data import BitStringData  # noqa: E402
+from open61850.mms import ControlError, operate  # noqa: E402
+from open61850.mms.control import oper_value  # noqa: E402
+
+CTRL = "IED01CTRL"
+ON, OFF = BitStringData(b"\x80", 6), BitStringData(b"\x40", 6)  # Dbpos on (10), off (01)
+
+
+@pytest.fixture
+def switches() -> Iterator[MmsServer]:
+    with MmsServer(IedModel.from_scl(DATA_DIR / "controls.scd.xml"), "127.0.0.1", 0) as srv:
+        srv.start()
+        yield srv
+
+
+@pytest.mark.parametrize("ln, model, terminated", [
+    ("CSWI1", "direct-with-normal-security", False),
+    ("CSWI2", "sbo-with-normal-security", False),
+    ("CSWI3", "direct-with-enhanced-security", True),
+    ("CSWI4", "sbo-with-enhanced-security", True),
+])
+def test_control_models(switches: MmsServer, ln: str, model: str, terminated: bool) -> None:
+    with MmsClient.connect("127.0.0.1", switches.port) as client:
+        result = operate(client, f"{CTRL}/{ln}.Pos", True, ctl_num=7)
+        assert str(result).startswith(model) and result.terminated is terminated
+        assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == ON
+        assert client.read(f"{CTRL}/{ln}.Pos.ctlNum[ST]") == UIntData(7)
+        operate(client, f"{CTRL}/{ln}.Pos", False)
+        assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == OFF
+
+
+def test_control_refusals(switches: MmsServer) -> None:
+    switches.controls.set_handler(f"{CTRL}/CSWI3.Pos", lambda command: 10)  # blocked-by-interlocking
+    switches.controls.set_handler(f"{CTRL}/CSWI1.Pos", lambda command: 10)
+    with MmsClient.connect("127.0.0.1", switches.port) as client, \
+            MmsClient.connect("127.0.0.1", switches.port) as other:
+        with pytest.raises(ControlError) as refused:
+            operate(client, f"{CTRL}/CSWI3.Pos", True)
+        assert refused.value.stage == "termination" and refused.value.last_appl_error.add_cause == 10
+        with pytest.raises(ControlError) as refused:
+            operate(client, f"{CTRL}/CSWI1.Pos", True)  # normal security: LastApplError, then the refusal
+        assert refused.value.stage == "operate" and refused.value.last_appl_error.add_cause == 10
+        with pytest.raises(ControlError, match="ctlModel 0"):
+            operate(client, f"{CTRL}/CSWI5.Pos", True)
+        with pytest.raises(DataAccessError):  # Oper of an SBO object without selection
+            client.write(f"{CTRL}/CSWI2$CO$Pos$Oper", oper_value(True))
+        # a selection belongs to its client, and lapses after sboTimeout (300 ms here)
+        assert client.read(f"{CTRL}/CSWI2$CO$Pos$SBO") == VisibleStringData(f"{CTRL}/CSWI2$CO$Pos")
+        assert other.read(f"{CTRL}/CSWI2$CO$Pos$SBO") == VisibleStringData("")
+        time.sleep(0.35)
+        assert other.read(f"{CTRL}/CSWI2$CO$Pos$SBO") == VisibleStringData(f"{CTRL}/CSWI2$CO$Pos")
+        client.write(f"{CTRL}/CSWI4$CO$Pos$SBOw", oper_value(True))
+        with pytest.raises(ControlError) as refused:
+            operate(other, f"{CTRL}/CSWI4.Pos", True)
+        assert refused.value.last_appl_error.add_cause == 19  # object-already-selected
+        cancel = StructureData(oper_value(True).members[:5])
+        client.write(f"{CTRL}/CSWI4$CO$Pos$Cancel", cancel)
+        operate(other, f"{CTRL}/CSWI4.Pos", True)
+        with pytest.raises(DataAccessError):  # ST is not written by clients, CO only through the services
+            client.write(f"{CTRL}/CSWI1$CO$Pos$Oper$ctlVal", BoolData(True))
+
+
+def test_control_test_flag_and_time_activation(switches: MmsServer) -> None:
+    commands = []
+    switches.controls.set_handler(f"{CTRL}/CSWI1.Pos", lambda command: commands.append(command))
+    with MmsClient.connect("127.0.0.1", switches.port) as client:
+        operate(client, f"{CTRL}/CSWI1.Pos", True, test=True)
+        assert commands == []  # checked, not executed
+        operate(client, f"{CTRL}/CSWI1.Pos", True, ctl_num=3, interlock_check=False)
+        (command,) = commands
+        assert (command.reference, command.ctl_val, command.ctl_num) == (f"{CTRL}/CSWI1$CO$Pos", BoolData(True), 3)
+        assert command.synchro_check and not command.interlock_check and not command.test
+
+
+def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:
+    scd = (DATA_DIR / "controls.scd.xml").read_text().replace(
+        '<BDA name="ctlVal" bType="BOOLEAN"/>\n      <BDA name="origin"',
+        '<BDA name="ctlVal" bType="BOOLEAN"/>\n      <BDA name="operTm" bType="Timestamp"/>\n      <BDA name="origin"', 1)
+    path = tmp_path / "timed.scd.xml"
+    path.write_text(scd)
+    with MmsServer(IedModel.from_scl(path), "127.0.0.1", 0) as server:
+        server.start()
+        with MmsClient.connect("127.0.0.1", server.port) as client:
+            for ln in ("CSWI1", "CSWI3"):
+                start = time.monotonic()
+                result = operate(client, f"{CTRL}/{ln}.Pos", True, oper_tm=datetime.now(timezone.utc) + timedelta(seconds=0.25))
+                if result.terminated:  # enhanced: the termination follows the execution
+                    assert time.monotonic() - start >= 0.2
+                    assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == ON
+                else:
+                    assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == OFF
+                    time.sleep(0.35)
+                    assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == ON
