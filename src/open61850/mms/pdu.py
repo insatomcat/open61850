@@ -144,9 +144,9 @@ def _decode_variable_list(content: bytes) -> list[ObjectName]:
 # --- envelope ----------------------------------------------------------------
 
 
-def wrap(mms_pdu: bytes) -> bytes:
-    """Put an MMS PDU in the session and presentation data envelope."""
-    pdv = ber.encode_tlv(0x02, bytes([MMS_PRESENTATION_CONTEXT])) + ber.encode_tlv(0xA0, mms_pdu)
+def wrap(mms_pdu: bytes, context: int = MMS_PRESENTATION_CONTEXT) -> bytes:
+    """Put an MMS PDU in the session and presentation data envelope (``context``: the MMS one agreed)."""
+    pdv = ber.encode_tlv(0x02, ber.encode_integer(context)) + ber.encode_tlv(0xA0, mms_pdu)
     return SESSION_DATA + ber.encode_tlv(0x61, ber.encode_tlv(0x30, pdv))
 
 

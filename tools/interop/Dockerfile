@@ -15,7 +15,12 @@ RUN mkdir /out && cp /l/build/examples/server_example_basic_io/server_example_ba
     /l/build/examples/server_example_control/server_example_control \
     /l/build/examples/server_example_goose/server_example_goose \
     /l/build/examples/sv_publisher/sv_publisher_example \
-    /l/build/examples/goose_subscriber/goose_subscriber_example /out/ \
+    /l/build/examples/goose_subscriber/goose_subscriber_example \
+    /l/build/examples/iec61850_client_example1/iec61850_client_example1 \
+    /l/build/examples/iec61850_client_example2/iec61850_client_example2 \
+    /l/build/examples/iec61850_client_example_reporting/iec61850_client_example_reporting \
+    /l/build/examples/iec61850_client_example_control/client_example_control \
+    /l/build/examples/mms_utility/mms_utility /out/ \
  && mkdir /scl && cp /l/examples/server_example_basic_io/simpleIO_direct_control.cid \
     /l/examples/server_example_control/simpleIO_control_tests.cid \
     /l/examples/server_example_goose/simpleIO_direct_control_goose.cid \

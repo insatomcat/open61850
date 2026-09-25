@@ -42,6 +42,7 @@ __all__ = [
     "NamedType",
     "MmsType",
     "decode_type_description",
+    "encode_type_description",
     "decode_type_specification",
     "get_variable_access_attributes_response",
     "label",
@@ -117,6 +118,37 @@ def decode_type_description(tlv: ber.Tlv) -> MmsType:
             return PrimitiveType(kind, ber.decode_integer(tlv.value))
         return PrimitiveType(kind)
     raise MmsProtocolError(f"unsupported TypeDescription tag 0x{tlv.tag:X}")
+
+
+_PRIMITIVE_TAGS = {kind: number for number, kind in PRIMITIVES.items()}
+_FLOAT_EXPONENT = {32: 8, 64: 11}
+
+
+def encode_type_description(mms_type: MmsType) -> bytes:
+    """The TypeDescription TLV of a type (what :func:`decode_type_description` reads)."""
+    if isinstance(mms_type, StructureType):
+        components = b"".join(
+            ber.encode_tlv(0x30, ber.encode_tlv(0x80, name.encode("ascii"))
+                           + ber.encode_tlv(0xA1, encode_type_description(ctype)))
+            for name, ctype in mms_type.components
+        )
+        return ber.encode_tlv(0xA2, ber.encode_tlv(0xA1, components))
+    if isinstance(mms_type, ArrayType):
+        return ber.encode_tlv(0xA1, ber.encode_tlv(0x81, ber.encode_unsigned(mms_type.count))
+                              + ber.encode_tlv(0xA2, encode_type_description(mms_type.element)))
+    if isinstance(mms_type, NamedType):
+        raise ValueError("a named type has no description of its own")
+    number = _PRIMITIVE_TAGS[mms_type.kind]
+    if mms_type.kind == "float":
+        width = mms_type.size or 32
+        body = (ber.encode_tlv(0x02, ber.encode_unsigned(width))
+                + ber.encode_tlv(0x02, ber.encode_unsigned(_FLOAT_EXPONENT[width])))
+        return ber.encode_tlv(ber.make_tag(number, constructed=True), body)
+    if mms_type.kind == "binary-time":
+        return ber.encode_tlv(ber.make_tag(number), ber.encode_boolean(True))  # with the date
+    if mms_type.size is None:
+        return ber.encode_tlv(ber.make_tag(number))
+    return ber.encode_tlv(ber.make_tag(number), ber.encode_integer(mms_type.size))
 
 
 def decode_type_specification(tlv: ber.Tlv) -> MmsType:

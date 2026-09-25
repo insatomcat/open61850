@@ -371,3 +371,50 @@ def test_publishing_examples_on_lo() -> None:
             sv_ids.update(a.sv_id for a in s[1].asdus)
     assert states[1] == [False] * 4 and states[2] == [True, False, False, False]  # AnalogValues has 4 members
     assert sv_ids == {"IED01_MU01_SV1"}
+
+
+# --- libiec61850's clients against the open61850 server -------------------------------
+
+OUR_PORT = 10200
+
+
+@pytest.fixture
+def our_server():
+    from open61850.server import IedModel, MmsServer
+
+    model = IedModel.from_scl(f"{SCL_DIR}/simpleIO_direct_control.cid", brcb_resv_tms=True)
+    with MmsServer(model, "127.0.0.1", OUR_PORT) as server:
+        server.start()
+        yield server
+
+
+def _client(*command: str, timeout: float = 10) -> str:
+    try:
+        run = subprocess.run(["stdbuf", "-oL", *command], capture_output=True, text=True, timeout=timeout)
+        return run.stdout
+    except subprocess.TimeoutExpired as exc:  # some examples sleep a minute at the end
+        out = exc.stdout or b""
+        return out.decode() if isinstance(out, bytes) else out
+
+
+def test_libiec61850_mms_utility_on_our_server(our_server) -> None:
+    out = _client("mms_utility", "-h", "127.0.0.1", "-p", str(OUR_PORT), "-i")
+    assert "vendor:\topen61850" in out and "revision:" in out
+    out = _client("mms_utility", "-h", "127.0.0.1", "-p", str(OUR_PORT), "-d")
+    assert out.strip().splitlines()[-1] == LD
+
+
+def test_libiec61850_browses_our_server(our_server) -> None:
+    out = _client("iec61850_client_example2", "127.0.0.1", str(OUR_PORT))
+    assert f"LD: {LD}" in out
+    for line in ("LN: GGIO1", "DO: SPCSO1", "DA: ctlModel", "DA: orIdent", "LN: LLN0", "LN: LPHD1"):
+        assert line in out, line
+
+
+def test_libiec61850_reads_and_writes_our_server(our_server) -> None:
+    our_server.model.set(f"{LD}/GGIO1.AnIn1.mag.f[MX]", 1.5)
+    out = _client("iec61850_client_example1", "127.0.0.1", str(OUR_PORT), timeout=4)
+    assert "Connected" in out and "read float value: 1.500000" in out
+    assert "failed to write" not in out and "failed to read dataset" not in out
+    assert "RptEna = 0" in out
+    assert our_server.model.get(f"{LD}/GGIO1.NamPlt.vendor[DC]").value == "libiec61850.com"
