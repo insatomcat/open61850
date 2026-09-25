@@ -38,7 +38,8 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `mms/rcb.py` | RCB status (RptEna, Resv/ResvTms, Owner, RptID, DatSet), `usable` / `find_free` among instances (`group_instances` strips the trailing number): free ones first, then the ones our own address reserved without enabling; `enable` reserves a BRCB with ResvTms first (the VMC7 refuses configuration writes otherwise; edition 1 BRCBs have no ResvTms), then typed, checked writes; `disable` also releases (ResvTms = 0 or Resv = FALSE). |
 | `mms/control.py` | `operate()`: ctlModel read from `CF`, then Oper (direct), SBO read + Oper, or SBOw + Oper; enhanced security waits for the CommandTermination. Refusals raise `ControlError` with the `LastApplError` (AddCause names per 7-2 Ed2). `Origin` defaults to station-control (orCat 2). Report listeners carry the LastApplError / termination to the waiting call. |
 | `mms/__main__.py` | The `open61850-mms` command line. |
-| `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). |
+| `comtrade.py` | COMTRADE reader (C37.111 1991/1999/2013, ASCII, BINARY, BINARY32, FLOAT32; `.cff` not read): `analog()` in primary or secondary values (the `ps` field and the ratio), missing samples NaN (99999, empty, 0x8000, 0x80000000, NaN), `times()` from the rates or the timestamps, `resample` (linear, NaN as 0). Checked against the `comtrade` package from PyPI on the four formats: same values within float32 rounding, same digital states and times. |
+| `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). `Playback`: INT32 rows (and optional qualities) sent instead of the waves and fault from sample `start_second * rate + start_smp`, optionally every `repeat_s`; `start_second=None` is set by `Publisher.start`; `from_sv_frames` (captured stream, recent smpCnt skipped), `from_comtrade` (resampled). |
 
 Public API: each module's `__all__` (the `mms` package re-exports the usual
 names). Only `mms`, `capture` and the SV `Publisher` do network I/O, and
@@ -124,6 +125,13 @@ streams with one `sendmmsg`. Deadlines are computed from the second (no
 accumulated rounding). Priority (`SCHED_FIFO`) and CPU pinning are applied
 to the engine thread before it reports ready, so a refusal raises at
 `start()`.
+
+A playback reaches the engine as native-endian 32-bit arrays (values,
+optional qualities), its channel count, its first absolute sample number
+and its period in samples; row = (second * rate + smpCnt - start) mod
+period, taken only inside the recording, as `Playback.index` does. Engine
+0.4 added it: `Publisher` refuses a playback with an older engine, which
+would ignore it.
 
 The sample maths mirrors `Wave.value` operation for operation: phase from
 `fmod(f * second, 1) + f * smpCnt / rate` (keeps precision at large UNIX

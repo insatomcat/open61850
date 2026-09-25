@@ -17,6 +17,7 @@ from open61850 import sv
 from open61850.sv_publisher import (
     SIMULATION_BIT,
     Fault,
+    Playback,
     Publisher,
     SvStream,
     Wave,
@@ -192,3 +193,101 @@ def test_command_line_matches_rt_sender_options(capsys: pytest.CaptureFixture[st
     assert main("lo 02:00:00:00:00:01 01:0c:cd:04:00:01 SV --appid 1 --conf-rev 1 --dump".split()) == 0
     raw = bytes.fromhex(capsys.readouterr().out.strip())
     assert sv.decode_sv_frame(raw)[1].asdus[0].sv_id == "SV"  # type: ignore[index]
+
+
+# --- playback --------------------------------------------------------------------
+
+
+def _pb_stream(**kwargs) -> SvStream:
+    return SvStream("MU01", 0x4000, "01:0c:cd:04:00:01", "02:00:00:00:00:01",
+                    (Wave(10, scale=1, quality=0x11), Wave(20, scale=1, quality=0x22)), **kwargs)
+
+
+def test_playback_replaces_the_waves_for_its_duration() -> None:
+    playback = Playback([(1, 2), (3, 4), (5, 6)], start_second=100, start_smp=10)
+    stream = _pb_stream(playback=playback)
+    rate = 4000
+    assert sample_values(stream, 100, 9, rate) == sample_values(_pb_stream(), 100, 9, rate)
+    assert [sample_values(stream, 100, n, rate) for n in (10, 11, 12)] == [[1, 2], [3, 4], [5, 6]]
+    assert sample_values(stream, 100, 13, rate) == sample_values(_pb_stream(), 100, 13, rate)
+    frame = render_frame(build_template(stream, 2, rate), stream, 100, 10, rate)
+    asdus = sv.decode_sv_frame(frame)[1].asdus
+    # without qualities, those of the normal waves
+    assert [sv.decode_int32_samples(a.sample) for a in asdus] == [[(1, 0x11), (2, 0x22)], [(3, 0x11), (4, 0x22)]]
+
+
+def test_playback_repeats_and_carries_qualities() -> None:
+    playback = Playback([(7, 8)], start_second=0, repeat_s=2, qualities=[(0x1, 0x2)])
+    stream = _pb_stream(playback=playback)
+    template = build_template(stream, 1, 4000)
+    for second in (0, 2, 4000):
+        asdu = sv.decode_sv_frame(render_frame(template, stream, second, 0, 4000))[1].asdus[0]
+        assert sv.decode_int32_samples(asdu.sample) == [(7, 1), (8, 2)]
+    assert sample_values(stream, 1, 0, 4000) == sample_values(_pb_stream(), 1, 0, 4000)
+
+
+def test_playback_checks() -> None:
+    with pytest.raises(ValueError):
+        Playback([])
+    with pytest.raises(ValueError):
+        Playback([(1, 2), (3,)])
+    with pytest.raises(ValueError):
+        Playback([(1, 2)], qualities=[(1, 2), (3, 4)])
+    with pytest.raises(ValueError):
+        build_template(_pb_stream(playback=Playback([(1, 2, 3)])), 1, 4000)
+    unresolved = _pb_stream(playback=Playback([(1, 2)]))
+    assert sample_values(unresolved, 0, 0, 4000) == sample_values(_pb_stream(), 0, 0, 4000)
+
+
+def test_playback_starts_with_the_publisher() -> None:
+    from open61850.sv_publisher import _resolve_playback
+
+    resolved = _resolve_playback(_pb_stream(playback=Playback([(1, 2)], start_smp=5)), 1234)
+    assert resolved.playback.start_second == 1234 and resolved.playback.start_smp == 5
+    fixed = _pb_stream(playback=Playback([(1, 2)], start_second=9))
+    assert _resolve_playback(fixed, 1234) is fixed
+
+
+def test_playback_from_captured_frames() -> None:
+    source = SvStream("MU09", 0x4001, "01:0c:cd:04:00:02", "02:00:00:00:00:09", three_phase(i_peak=10, v_peak=100))
+    template = build_template(source, 2, 4800)
+    frames = [render_frame(template, source, 7, first, 4800) for first in range(0, 12, 2)]
+    frames.insert(2, frames[1])  # a duplicated frame is played once
+    other = _pb_stream()
+    frames.insert(0, render_frame(build_template(other, 1, 4800), other, 7, 0, 4800))
+    playback = Playback.from_sv_frames(frames, "MU09", start_second=50)
+    assert len(playback.values) == 12
+    assert list(playback.values[3]) == sample_values(source, 7, 3, 4800)
+    assert playback.qualities is not None and playback.channels == 9
+    with pytest.raises(ValueError, match="no sample"):
+        Playback.from_sv_frames(frames, "NOPE")
+
+
+def test_command_line_replay_options(tmp_path) -> None:
+    from test_comtrade import _write
+
+    from open61850.pcap import PcapWriter
+    from open61850.sv_publisher import _parser, playback_from_args
+
+    base = ["lo", "02:00:00:00:00:01", "01:0c:cd:04:00:01", "MU01", "--appid", "0x4000", "--conf-rev", "1"]
+    cfg = _write(tmp_path, "ASCII")
+    args = _parser().parse_args(base + ["--comtrade", cfg, "--comtrade-channels", "IA,,,,,,1,,", "--replay-delay", "2",
+                                        "--replay-repeat", "10"])
+    waves = three_phase(i_peak=1, v_peak=1)
+    playback = playback_from_args(args, waves, 1000)
+    assert (playback.start_second, playback.repeat_s, playback.channels) == (1002, 10, 9)
+    assert playback.values[0][1] == 0 and playback.values[0][6] != 0
+    with pytest.raises(SystemExit, match="needs 9 entries"):
+        playback_from_args(_parser().parse_args(base + ["--comtrade", cfg, "--comtrade-channels", "IA"]), waves, 0)
+
+    source = SvStream("MU09", 0x4001, "01:0c:cd:04:00:02", "02:00:00:00:00:09", waves)
+    template = build_template(source, 2, 4800)
+    capture = tmp_path / "mu09.pcap"
+    with PcapWriter(capture) as writer:
+        for first in range(0, 20, 2):
+            writer.write(render_frame(template, source, 3, first, 4800), 3 + first / 4800)
+    args = _parser().parse_args(base + ["--replay-pcap", str(capture), "--replay-svid", "MU09"])
+    playback = playback_from_args(args, waves, 1000)
+    assert playback.start_second == 1000 and len(playback.values) == 20
+    assert list(playback.values[5]) == sample_values(source, 3, 5, 4800)
+    assert playback_from_args(_parser().parse_args(base), waves, 0) is None

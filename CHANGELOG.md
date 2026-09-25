@@ -20,6 +20,12 @@
 - `open61850-mms browse`: the data model as a tree or one reference per line.
 - Interoperability tests against libiec61850's example programs
   (`tools/interop/run.sh`, and CI).
+- SV playback: `Playback` sends recorded samples instead of the waveforms,
+  once or periodically, from a captured stream (`Playback.from_sv_frames`)
+  or a COMTRADE record (`Playback.from_comtrade`); `open61850-sv
+  --replay-pcap` and `--comtrade`. Both engines; `open61850-rt` 0.4.0.
+- `open61850.comtrade`: COMTRADE records read (1991, 1999, 2013; ASCII and
+  binary formats) and resampled.
 
 ## 0.3.0
 

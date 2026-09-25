@@ -26,7 +26,8 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.goose` | GOOSE PDUs and frames (IEC 61850-8-1) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
 | `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
-| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
+| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
+| `open61850.comtrade` | COMTRADE records (IEEE C37.111 1991, 1999, 2013; ASCII, BINARY, BINARY32, FLOAT32): channels in primary or secondary values, sample times, resampling |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
 | `open61850.quality` | Quality and TimeQuality in readable form |
@@ -139,6 +140,19 @@ with Publisher("eth1", rate=4800, asdus_per_frame=2, rt_priority=50) as pub:
     ...
 ```
 
+Recorded samples can replace the waveforms: a stream captured from a merging unit, or a fault record in COMTRADE, resampled to the publisher's rate. A `Playback` starts at a given second (by default when the publisher starts), once or every few seconds; both engines send it.
+
+```python
+from open61850.comtrade import load_comtrade
+from open61850.sv import Playback
+
+record = load_comtrade("fault.cfg")
+stream.playback = Playback.from_comtrade(
+    record, ["IA", "IB", "IC", None, None, None, "VA", "VB", "VC"], rate=4800,
+    scales=[w.scale for w in stream.waves], repeat_s=10,    # 9-2LE units: mA and 10 mV
+)
+```
+
 Waveforms are functions of UNIX time, so several streams, processes or machines on the same clock stay in phase. With `open61850[rt]` the frames are sent by the Rust engine: absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for all streams, optional `SCHED_FIFO` priority and CPU pinning. Without it, a Python thread sends the same frames, with only the precision of `time.sleep` (tests, low rates). Measured on loopback on a Xeon server, 3 streams at 4800 samples/s, `SCHED_FIFO` 50: every sample sent, delay after the nominal sample time median 6 µs, 99th percentile 14 µs, maximum 46 µs over 10 s.
 
 ## Command line
@@ -165,7 +179,7 @@ sudo open61850-sv eth1 02:00:00:00:00:01 01:0c:cd:04:00:01 MU01_SV1 --appid 0x40
   --fault --fault-i-peak 50 --fault-v-peak 20 --fault-cycle 4 --rt-priority 80
 ```
 
-`open61850-sv` publishes one SV stream until stopped (`--duration` to stop by itself, `--dump` to print one frame).
+`open61850-sv` publishes one SV stream until stopped (`--duration` to stop by itself, `--dump` to print one frame). `--replay-pcap FILE --replay-svid ID` replays a captured stream, `--comtrade FILE.cfg --comtrade-channels IA,IB,IC,,,,VA,VB,VC` a fault record, with `--replay-delay` and `--replay-repeat` in seconds.
 
 ```bash
 open61850-supervise capture.pcapng --events --sample-rate 4800
@@ -177,7 +191,7 @@ sudo open61850-supervise --live eth1
 ## Scope and limits
 
 - No MMS server; GOOSE is encoded, decoded and supervised, but publishing it (retransmission scheme) is up to the application.
-- SV publication sends sinusoids and periodic faults; arbitrary sample sources (replay, live measurements) are to come.
+- SV publication sends sinusoids, periodic faults and recorded samples (captures, COMTRADE); samples computed live by the application are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
 - Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers and publishers (model, reads, reports, the four control models, GOOSE, SV); reports of other IEDs are welcome.

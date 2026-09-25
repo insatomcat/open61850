@@ -68,6 +68,30 @@ impl Fault {
     }
 }
 
+/// Recorded samples played instead of the waves (`open61850.sv_publisher.Playback`).
+#[derive(Clone)]
+struct Playback {
+    values: Vec<i32>,
+    qualities: Option<Vec<u32>>,
+    channels: usize,
+    start: i64,          // absolute sample number (second * rate + smpCnt) of row 0
+    period: Option<i64>, // in samples, when the recording repeats
+}
+
+impl Playback {
+    fn rows(&self) -> i64 {
+        (self.values.len() / self.channels) as i64
+    }
+
+    fn index(&self, second: i64, smp: i64, rate: i64) -> Option<usize> {
+        let mut i = second * rate + smp - self.start;
+        if let Some(p) = self.period {
+            i = i.rem_euclid(p);
+        }
+        (0..self.rows()).contains(&i).then_some(i as usize)
+    }
+}
+
 #[derive(Clone)]
 struct Stream {
     frame: Vec<u8>,
@@ -75,6 +99,7 @@ struct Stream {
     sample_offsets: Vec<usize>,
     waves: Vec<Wave>,
     fault: Option<Fault>,
+    playback: Option<Playback>,
 }
 
 impl Stream {
@@ -84,6 +109,18 @@ impl Stream {
             let sec = second + n.div_euclid(rate);
             let smp = n.rem_euclid(rate);
             buf[smp_at..smp_at + 2].copy_from_slice(&(smp as u16).to_be_bytes());
+            if let Some((p, row)) = self.playback.as_ref().and_then(|p| p.index(sec, smp, rate).map(|r| (p, r))) {
+                for ch in 0..p.channels {
+                    let at = sample_at + 8 * ch;
+                    let quality = match &p.qualities {
+                        Some(q) => q[row * p.channels + ch],
+                        None => self.waves[ch].quality,
+                    };
+                    buf[at..at + 4].copy_from_slice(&p.values[row * p.channels + ch].to_be_bytes());
+                    buf[at + 4..at + 8].copy_from_slice(&quality.to_be_bytes());
+                }
+                continue;
+            }
             let waves = match &self.fault {
                 Some(f) if f.active(sec, smp, rate) => &f.waves,
                 _ => &self.waves,
@@ -165,6 +202,10 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
             duration_s: item(f, "duration_s")?.extract()?,
         })
     };
+    let playback = match d.get_item("playback")? {
+        Some(obj) if !obj.is_none() => Some(playback_from(obj.downcast::<PyDict>()?)?),
+        _ => None,
+    };
     if smp_offsets.len() != sample_offsets.len() || smp_offsets.is_empty() {
         return Err(PyValueError::new_err("smp_cnt_offsets and sample_offsets must match"));
     }
@@ -177,7 +218,39 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
             return Err(PyValueError::new_err("offset outside the frame"));
         }
     }
-    Ok(Stream { frame, smp_offsets, sample_offsets, waves, fault })
+    if playback.as_ref().is_some_and(|p| p.channels != channels) {
+        return Err(PyValueError::new_err("the playback must have as many channels as the stream"));
+    }
+    Ok(Stream { frame, smp_offsets, sample_offsets, waves, fault, playback })
+}
+
+fn ints<T>(bytes: &[u8], convert: fn([u8; 4]) -> T) -> PyResult<Vec<T>> {
+    if bytes.len() % 4 != 0 {
+        return Err(PyValueError::new_err("playback data must be 32-bit integers"));
+    }
+    Ok(bytes.chunks_exact(4).map(|c| convert([c[0], c[1], c[2], c[3]])).collect())
+}
+
+fn playback_from(d: &Bound<'_, PyDict>) -> PyResult<Playback> {
+    let channels: usize = item(d, "channels")?.extract()?;
+    let values = ints(&item(d, "values")?.extract::<Vec<u8>>()?, i32::from_ne_bytes)?;
+    let qualities_obj = item(d, "qualities")?;
+    let qualities = if qualities_obj.is_none() {
+        None
+    } else {
+        Some(ints(&qualities_obj.extract::<Vec<u8>>()?, u32::from_ne_bytes)?)
+    };
+    if channels == 0 || values.is_empty() || values.len() % channels != 0 {
+        return Err(PyValueError::new_err("playback values must fill whole rows of channels"));
+    }
+    if qualities.as_ref().is_some_and(|q| q.len() != values.len()) {
+        return Err(PyValueError::new_err("playback qualities must match the values"));
+    }
+    let period: Option<i64> = item(d, "period")?.extract()?;
+    if period.is_some_and(|p| p <= 0) {
+        return Err(PyValueError::new_err("playback period must be positive"));
+    }
+    Ok(Playback { values, qualities, channels, start: item(d, "start")?.extract()?, period })
 }
 
 #[pymethods]

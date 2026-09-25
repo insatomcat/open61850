@@ -13,6 +13,7 @@ Codecs, with no I/O:
 - :mod:`open61850.goose`: GOOSE PDUs and frames (IEC 61850-8-1).
 - :mod:`open61850.sv`: Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9).
 - :mod:`open61850.scl`: SCL files (IEDs, logical devices, data sets, report control blocks).
+- :mod:`open61850.comtrade`: COMTRADE records (IEEE C37.111), read and resampled.
 - :mod:`open61850.supervision`: GOOSE and SV stream supervision (counters,
   timeAllowedtoLive, configuration), fed with decoded messages.
 

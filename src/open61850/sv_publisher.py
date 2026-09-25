@@ -5,7 +5,8 @@
 
 A :class:`SvStream` describes one SV stream (addresses, APPID, svID, confRev,
 smpSynch, VLAN) and the value of each channel over time (:class:`Wave`,
-optionally a periodic :class:`Fault`). A :class:`Publisher` sends one or more
+optionally a periodic :class:`Fault`, optionally recorded samples played
+back with :class:`Playback`, from a capture or a COMTRADE record). A :class:`Publisher` sends one or more
 streams at ``rate`` samples per second, ``asdus_per_frame`` samples per frame,
 from an Ethernet interface (Linux, AF_PACKET, root or CAP_NET_RAW).
 
@@ -35,6 +36,9 @@ same bytes as :func:`render_frame` (the tests check it).
 from __future__ import annotations
 
 import argparse
+import array
+import collections
+import dataclasses
 import math
 import signal
 import socket
@@ -43,7 +47,8 @@ import struct
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from collections.abc import Iterable
+from typing import Any, Optional, Sequence, Union
 
 from . import ber, sv
 
@@ -51,6 +56,7 @@ __all__ = [
     "SIMULATION_BIT",
     "Wave",
     "Fault",
+    "Playback",
     "SvStream",
     "Template",
     "PublisherStats",
@@ -119,6 +125,110 @@ class Fault:
         return (second * rate + smp_cnt - start) % period < length
 
 
+@dataclass(frozen=True)
+class Playback:
+    """Recorded samples sent instead of the waveforms (and of the fault).
+
+    ``values[n][ch]`` is the INT32 of channel ``ch`` at the ``n``-th sample
+    played, ``qualities`` the same for the quality (the normal waves' quality
+    when ``None``). Sample 0 goes out as smpCnt ``start_smp`` of UNIX second
+    ``start_second`` (``None``: the second the publisher starts); with
+    ``repeat_s`` the recording starts again every ``repeat_s`` seconds.
+    Outside the recording the stream sends its waves. The values must be at
+    the publisher's rate: :meth:`from_sv_frames` and :meth:`from_comtrade`
+    build them.
+    """
+
+    values: tuple[tuple[int, ...], ...]
+    start_second: Optional[int] = None
+    start_smp: int = 0
+    repeat_s: Optional[int] = None
+    qualities: Optional[tuple[tuple[int, ...], ...]] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", tuple(tuple(int(v) for v in row) for row in self.values))
+        if self.qualities is not None:
+            object.__setattr__(self, "qualities", tuple(tuple(int(q) for q in row) for row in self.qualities))
+            if len(self.qualities) != len(self.values):
+                raise ValueError("qualities must have one row per sample")
+        if not self.values:
+            raise ValueError("a playback needs samples")
+        width = len(self.values[0])
+        rows = self.values + (self.qualities or ())
+        if any(len(row) != width for row in rows):
+            raise ValueError("every sample must have the same number of channels")
+        if self.repeat_s is not None and self.repeat_s < 1:
+            raise ValueError("repeat_s must be at least 1")
+
+    @property
+    def channels(self) -> int:
+        return len(self.values[0])
+
+    def index(self, second: int, smp_cnt: int, rate: int) -> Optional[int]:
+        """Row of ``values`` sent at this sample, or ``None`` outside the recording.
+
+        A playback whose start the publisher has not set yet never plays.
+        """
+        if self.start_second is None:
+            return None
+        i = second * rate + smp_cnt - (self.start_second * rate + self.start_smp)
+        if self.repeat_s is not None:
+            i %= self.repeat_s * rate
+        return i if 0 <= i < len(self.values) else None
+
+    @classmethod
+    def from_sv_frames(cls, frames: Iterable[bytes], sv_id: str, **kwargs: Any) -> Playback:
+        """The samples of stream ``sv_id`` in captured SV frames (INT32 + quality data sets), in order.
+
+        Frames of other streams, and samples whose smpCnt came among the last
+        64 (a duplicated frame), are skipped.
+        """
+        values: list[tuple[int, ...]] = []
+        qualities: list[tuple[int, ...]] = []
+        recent: collections.deque[int] = collections.deque(maxlen=64)
+        for raw in frames:
+            decoded = sv.decode_sv_frame(raw)
+            if decoded is None:
+                continue
+            for asdu in decoded[1].asdus:
+                if asdu.sv_id != sv_id or asdu.smp_cnt in recent:
+                    continue
+                recent.append(asdu.smp_cnt)
+                pairs = sv.decode_int32_samples(asdu.sample)
+                values.append(tuple(v for v, _q in pairs))
+                qualities.append(tuple(q for _v, q in pairs))
+        if not values:
+            raise ValueError(f"no sample of {sv_id!r} in the frames")
+        return cls(tuple(values), qualities=tuple(qualities), **kwargs)
+
+    @classmethod
+    def from_comtrade(cls, record: Any, channels: Sequence[Union[int, str, None]], rate: int,
+                      scales: Sequence[float], **kwargs: Any) -> Playback:
+        """A COMTRADE record's analog channels, resampled to ``rate`` (primary values).
+
+        ``channels`` names, for each channel of the stream, the record's
+        analog channel (index or ch_id), or ``None`` for zero; ``scales``
+        multiplies each before rounding (9-2LE: 1000 for A, 100 for V).
+        """
+        from .comtrade import resample
+
+        if len(scales) != len(channels):
+            raise ValueError("one scale per channel")
+        times = record.times()
+        columns = []
+        for ref, scale in zip(channels, scales):
+            if ref is None:
+                columns.append(None)
+                continue
+            resampled = resample(times, record.analog(ref), rate)
+            columns.append([_int32(round(x * scale)) for x in resampled])
+        length = max((len(c) for c in columns if c is not None), default=0)
+        if not length:
+            raise ValueError("no channel taken from the record")
+        rows = tuple(tuple(0 if c is None else c[n] for c in columns) for n in range(length))
+        return cls(rows, **kwargs)
+
+
 @dataclass
 class SvStream:
     """One SV stream. ``waves`` gives the channels in data set order."""
@@ -135,6 +245,7 @@ class SvStream:
     dat_set: Optional[str] = None
     simulation: bool = False
     fault: Optional[Fault] = None
+    playback: Optional[Playback] = None
 
     def waves_at(self, second: int, smp_cnt: int, rate: int) -> Sequence[Wave]:
         if self.fault is not None and self.fault.active(second, smp_cnt, rate):
@@ -213,6 +324,8 @@ def build_template(stream: SvStream, asdus_per_frame: int, rate: int) -> Templat
     channels = len(stream.waves)
     if stream.fault is not None and len(stream.fault.waves) != channels:
         raise ValueError("the fault waves must have as many channels as the stream")
+    if stream.playback is not None and stream.playback.channels != channels:
+        raise ValueError("the playback must have as many channels as the stream")
     asdu = sv.SvAsdu(
         sv_id=stream.sv_id,
         smp_cnt=0,
@@ -270,7 +383,15 @@ def _tlvs_at(data: bytes, start: int, end: int) -> list[ber.Tlv]:
 
 def sample_values(stream: SvStream, second: int, smp_cnt: int, rate: int) -> list[int]:
     """The INT32 values of every channel of ``stream`` at one sample."""
-    return [w.value(second, smp_cnt, rate) for w in stream.waves_at(second, smp_cnt, rate)]
+    return [value for value, _quality in _samples(stream, second, smp_cnt, rate)]
+
+
+def _samples(stream: SvStream, second: int, smp_cnt: int, rate: int) -> list[tuple[int, int]]:
+    playback = stream.playback
+    if playback is not None and (row := playback.index(second, smp_cnt, rate)) is not None:
+        qualities = playback.qualities[row] if playback.qualities is not None else [w.quality for w in stream.waves]
+        return list(zip(playback.values[row], qualities))
+    return [(w.value(second, smp_cnt, rate), w.quality) for w in stream.waves_at(second, smp_cnt, rate)]
 
 
 def render_frame(template: Template, stream: SvStream, second: int, first_smp: int, rate: int) -> bytes:
@@ -280,9 +401,8 @@ def render_frame(template: Template, stream: SvStream, second: int, first_smp: i
         sec, smp = divmod(first_smp + i, rate)
         sec += second
         struct.pack_into("!H", frame, smp_at, smp)
-        waves = stream.waves_at(sec, smp, rate)
-        for ch, wave in enumerate(waves):
-            struct.pack_into("!iI", frame, sample_at + 8 * ch, wave.value(sec, smp, rate), wave.quality)
+        for ch, (value, quality) in enumerate(_samples(stream, sec, smp, rate)):
+            struct.pack_into("!iI", frame, sample_at + 8 * ch, value, quality)
     return bytes(frame)
 
 
@@ -348,12 +468,17 @@ class Publisher:
         if not self.streams:
             raise ValueError("no stream to publish")
         start = at_second if at_second is not None else int(time.time()) + 1
+        self.streams = [_resolve_playback(s, start) for s in self.streams]
         templates = [build_template(s, self.asdus_per_frame, self.rate) for s in self.streams]
         if self.engine_name == "native":
             import open61850_rt
 
+            version = tuple(int(x) for x in open61850_rt.__version__.split(".")[:2])
+            if version < (0, 4) and any(s.playback is not None for s in self.streams):
+                raise RuntimeError(f"open61850-rt {open61850_rt.__version__} cannot play back samples: 0.4 or later")
+
             self._runner = open61850_rt.Engine(
-                self.iface, self.rate, self.asdus_per_frame, _native_streams(self.streams, templates),
+                self.iface, self.rate, self.asdus_per_frame, _native_streams(self.streams, templates, self.rate),
                 start, self.rt_priority, self.cpu,
             )
         else:
@@ -376,7 +501,14 @@ class Publisher:
         self.stop()
 
 
-def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template]) -> list[dict[str, Any]]:
+def _resolve_playback(stream: SvStream, start: int) -> SvStream:
+    """A playback without start second begins when the publisher does."""
+    if stream.playback is None or stream.playback.start_second is not None:
+        return stream
+    return dataclasses.replace(stream, playback=dataclasses.replace(stream.playback, start_second=start))
+
+
+def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], rate: int) -> list[dict[str, Any]]:
     """The plain data the native engine takes (see open61850_rt.Engine)."""
 
     def waves(ws: Sequence[Wave]) -> list[tuple[float, float, float, float, float, int]]:
@@ -389,12 +521,25 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template]) 
             f = stream.fault
             fault = {"waves": waves(f.waves), "cycle_s": f.cycle_s, "offset_s": f.offset_s,
                      "start_smp": f.start_smp, "duration_s": f.duration_s}
+        playback = None
+        if stream.playback is not None and stream.playback.start_second is not None:
+            pb = stream.playback
+            playback = {
+                # Native-endian 32-bit integers, one row after the other.
+                "values": array.array("i", [v for row in pb.values for v in row]).tobytes(),
+                "qualities": None if pb.qualities is None else
+                array.array("I", [q for row in pb.qualities for q in row]).tobytes(),
+                "channels": pb.channels,
+                "start": pb.start_second * rate + pb.start_smp,
+                "period": None if pb.repeat_s is None else pb.repeat_s * rate,
+            }
         out.append({
             "frame": template.frame,
             "smp_cnt_offsets": list(template.smp_cnt_offsets),
             "sample_offsets": list(template.sample_offsets),
             "waves": waves(stream.waves),
             "fault": fault,
+            "playback": playback,
         })
     return out
 
@@ -496,12 +641,43 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--fault-cycle", type=int, default=2, help="seconds between fault starts")
     p.add_argument("--fault-smpcnt", type=int, default=0, help="smpCnt of the first fault sample")
     p.add_argument("--fault-offset", type=int, default=0, help="seconds into the cycle")
+    p.add_argument("--replay-pcap", metavar="FILE", help="replay the samples of an SV stream captured in a pcap/pcapng")
+    p.add_argument("--replay-svid", help="svID to take from --replay-pcap (default: SVID)")
+    p.add_argument("--comtrade", metavar="CFG", help="replay a COMTRADE record, resampled to --rate")
+    p.add_argument("--comtrade-channels", metavar="A,B,...",
+                   help="record channel (ch_id or index from 0) for each stream channel, empty for zero")
+    p.add_argument("--replay-delay", type=int, default=0, help="seconds after the start before the replay")
+    p.add_argument("--replay-repeat", type=int, help="replay again every this many seconds")
     p.add_argument("--rt-priority", type=int, help="SCHED_FIFO priority of the sending thread (native engine)")
     p.add_argument("--cpu", type=int, help="pin the sending thread to this CPU (native engine)")
     p.add_argument("--engine", default="auto", choices=("auto", "native", "python"))
     p.add_argument("--duration", type=float, help="stop after this many seconds")
     p.add_argument("--dump", action="store_true", help="print the first frame in hex and exit")
     return p
+
+
+def playback_from_args(args: argparse.Namespace, channels: Sequence[Wave], start: int) -> Optional[Playback]:
+    """The --replay-pcap or --comtrade playback, starting ``--replay-delay`` seconds after ``start``."""
+    timing = {"start_second": start + args.replay_delay, "repeat_s": args.replay_repeat}
+    if args.replay_pcap and args.comtrade:
+        raise SystemExit("open61850-sv: --replay-pcap and --comtrade exclude each other")
+    if args.replay_pcap:
+        from .pcap import read_pcap
+
+        frames = (f.data for f in read_pcap(args.replay_pcap))
+        return Playback.from_sv_frames(frames, args.replay_svid or args.svid, **timing)
+    if args.comtrade:
+        from .comtrade import load_comtrade
+
+        refs: list[Union[int, str, None]] = []
+        for text in (args.comtrade_channels or "").split(","):
+            text = text.strip()
+            refs.append(None if not text else int(text) if text.isdigit() else text)
+        if len(refs) != len(channels):
+            raise SystemExit(f"open61850-sv: --comtrade-channels needs {len(channels)} entries for {args.layout}")
+        record = load_comtrade(args.comtrade)
+        return Playback.from_comtrade(record, refs, args.rate, [w.scale for w in channels], **timing)
+    return None
 
 
 def stream_from_args(args: argparse.Namespace) -> SvStream:
@@ -528,6 +704,10 @@ def stream_from_args(args: argparse.Namespace) -> SvStream:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     stream = stream_from_args(args)
+    start = int(time.time()) + 1
+    playback = playback_from_args(args, stream.waves, start)
+    if playback is not None:
+        stream = dataclasses.replace(stream, playback=playback)
     if args.dump:
         template = build_template(stream, args.asdus, args.rate)
         print(render_frame(template, stream, int(time.time()), 0, args.rate).hex())
@@ -538,11 +718,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    start = int(time.time()) + 1
+    start = max(start, int(time.time()) + 1)
+    if playback is not None and playback.start_second != start + args.replay_delay:  # loading took a while
+        stream = dataclasses.replace(stream, playback=dataclasses.replace(playback, start_second=start + args.replay_delay))
+        publisher.streams[0] = stream
     publisher.start(at_second=start)
     vlan = f"VLAN {args.vlan_id} priority {args.vlan_priority}" if args.vlan_id is not None else "no VLAN"
     print(f"open61850-sv: {args.svid} APPID 0x{args.appid:04x} on {args.iface} ({vlan}), {args.rate} samples/s, "
           f"{args.asdus} ASDUs per frame, {args.layout}, engine {publisher.engine_name}, from {start}", file=sys.stderr)
+    if playback is not None:
+        again = f", every {args.replay_repeat} s" if args.replay_repeat else ""
+        print(f"open61850-sv: replaying {len(playback.values)} samples from {start + args.replay_delay}{again}",
+              file=sys.stderr)
     stop.wait(None if args.duration is None else max(0.0, start + args.duration - time.time()))
     publisher.stop()
     print(f"open61850-sv: {publisher.stats()}", file=sys.stderr)
