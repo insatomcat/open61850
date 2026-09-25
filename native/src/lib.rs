@@ -635,7 +635,7 @@ fn encode_goose(pdu: &Bound<'_, PyAny>, address: Option<Address>) -> PyResult<Ve
         conf_rev: pdu.getattr("conf_rev")?.extract()?,
         nds_com: pdu.getattr("nds_com")?.extract()?,
         num_dat_set_entries: pdu.getattr("num_dat_set_entries")?.extract()?,
-        all_data: &all_data,
+        all_data: all_data.as_slice(),
     };
     let err = |e: goose::EncodeError| PyValueError::new_err(e.to_string());
     let len = goose::pdu_len(&message).map_err(err)? + address.map_or(0, |a| a.header_len());

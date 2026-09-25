@@ -8,3 +8,6 @@ dist/
 *.pcap
 *.pcapng
 target/
+native/fuzz/corpus/
+native/fuzz/artifacts/
+native/fuzz/coverage/

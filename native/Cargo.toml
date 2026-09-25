@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [workspace]
-members = ["core"]
+members = ["core", "capi"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.6.0"

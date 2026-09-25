@@ -122,42 +122,77 @@ fn leaf_len(item: &Data<'_>) -> Result<usize, DataError> {
     })
 }
 
-/// Content length of the value at `items[i]` and the index after its members.
-fn measure(items: &[Data<'_>], i: usize, depth: usize) -> Result<(usize, usize), DataError> {
+/// A preorder sequence read one value at a time: a slice or an array of
+/// [`Data`], or a caller's own representation (the C API reads the caller's
+/// array in place).
+pub trait DataList<'a> {
+    fn len(&self) -> usize;
+
+    /// The value at `i`; `None` past the end, or when the caller's value is
+    /// not a valid one (the encoder then reports [`DataError::MissingMembers`]).
+    fn get(&self, i: usize) -> Option<Data<'a>>;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<'a> DataList<'a> for [Data<'a>] {
+    fn len(&self) -> usize {
+        <[Data<'a>]>::len(self)
+    }
+
+    fn get(&self, i: usize) -> Option<Data<'a>> {
+        <[Data<'a>]>::get(self, i).copied()
+    }
+}
+
+impl<'a, const N: usize> DataList<'a> for [Data<'a>; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn get(&self, i: usize) -> Option<Data<'a>> {
+        self.as_slice().get(i).copied()
+    }
+}
+
+/// Tag and content length of the value at `items[i]`, and the index after its members.
+fn measure<'a, L: DataList<'a> + ?Sized>(items: &L, i: usize, depth: usize) -> Result<(u32, usize, usize), DataError> {
     let item = items.get(i).ok_or(DataError::MissingMembers)?;
-    match *item {
+    match item {
         Data::Structure(n) | Data::Array(n) => {
             if depth >= MAX_DEPTH {
                 return Err(DataError::TooDeep);
             }
             let (mut content, mut next) = (0, i + 1);
             for _ in 0..n {
-                let (len, after) = measure(items, next, depth + 1)?;
-                content += ber::tlv_len(items[next].tag(), len);
+                let (tag, len, after) = measure(items, next, depth + 1)?;
+                content += ber::tlv_len(tag, len);
                 next = after;
             }
-            Ok((content, next))
+            Ok((item.tag(), content, next))
         }
-        _ => Ok((leaf_len(item)?, i + 1)),
+        _ => Ok((item.tag(), leaf_len(&item)?, i + 1)),
     }
 }
 
 /// Encoded length of a whole sequence (every top-level value as a TLV).
-pub fn sequence_len(items: &[Data<'_>]) -> Result<usize, DataError> {
+pub fn sequence_len<'a, L: DataList<'a> + ?Sized>(items: &L) -> Result<usize, DataError> {
     let (mut total, mut i) = (0, 0);
     while i < items.len() {
-        let (len, next) = measure(items, i, 0)?;
-        total += ber::tlv_len(items[i].tag(), len);
+        let (tag, len, next) = measure(items, i, 0)?;
+        total += ber::tlv_len(tag, len);
         i = next;
     }
     Ok(total)
 }
 
-fn write_one(items: &[Data<'_>], i: usize, w: &mut Writer<'_>) -> Result<usize, DataError> {
-    let item = &items[i];
-    let (len, next) = measure(items, i, 0)?;
-    w.put_header(item.tag(), len)?;
-    match *item {
+fn write_one<'a, L: DataList<'a> + ?Sized>(items: &L, i: usize, w: &mut Writer<'_>) -> Result<usize, DataError> {
+    let (tag, len, next) = measure(items, i, 0)?;
+    let item = items.get(i).ok_or(DataError::MissingMembers)?;
+    w.put_header(tag, len)?;
+    match item {
         Data::Boolean(v) => w.put(&[if v { 0xFF } else { 0x00 }])?,
         Data::Integer(v) => w.put(Integer::signed(v).as_slice())?,
         Data::Unsigned(v) => w.put(Integer::unsigned(v).as_slice())?,
@@ -188,7 +223,7 @@ fn write_one(items: &[Data<'_>], i: usize, w: &mut Writer<'_>) -> Result<usize, 
 }
 
 /// Write every top-level value of a sequence as a TLV.
-pub fn write_sequence(items: &[Data<'_>], w: &mut Writer<'_>) -> Result<(), DataError> {
+pub fn write_sequence<'a, L: DataList<'a> + ?Sized>(items: &L, w: &mut Writer<'_>) -> Result<(), DataError> {
     let mut i = 0;
     while i < items.len() {
         i = write_one(items, i, w)?;

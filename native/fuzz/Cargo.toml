@@ -1,0 +1,43 @@
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo +nightly fuzz run <target> (from native/fuzz): sv_decode,
+# goose_decode, goose_roundtrip.
+
+[package]
+name = "open61850-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+open61850-core = { path = "../core" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sv_decode"
+path = "fuzz_targets/sv_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "goose_decode"
+path = "fuzz_targets/goose_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "goose_roundtrip"
+path = "fuzz_targets/goose_roundtrip.rs"
+test = false
+doc = false
+bench = false

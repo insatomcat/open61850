@@ -1,0 +1,18 @@
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "open61850-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C API of open61850-core: SV and GOOSE codecs for real-time C programs"
+repository.workspace = true
+publish = false
+
+[lib]
+name = "open61850"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+open61850-core = { path = "../core" }

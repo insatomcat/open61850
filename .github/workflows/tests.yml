@@ -58,6 +58,21 @@ jobs:
       - uses: actions/checkout@v7
       - run: tools/interop/run.sh -v
 
+  fuzz:
+    # Each open61850-core fuzz target for a minute (native/fuzz).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - working-directory: native/fuzz
+        run: |
+          for target in sv_decode goose_decode goose_roundtrip; do
+            cargo +nightly fuzz run "$target" -- -max_total_time=60
+          done
+
   native:
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +81,11 @@ jobs:
         with:
           python-version: "3.13"
       - run: cargo test --manifest-path native/Cargo.toml -p open61850-core
-      - run: cargo clippy --manifest-path native/Cargo.toml -p open61850-core --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path native/Cargo.toml -p open61850-core -p open61850-c --all-targets -- -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - run: native/capi/tests/run.sh
       - run: python -m pip install pytest ./native
       - run: python -m pytest tests/test_sv_native.py tests/test_sv_decode_native.py tests/test_goose_encode_native.py tests/test_goose_decode_native.py
       - run: sudo "$(which python)" -m pytest -s tests/test_sv_native.py

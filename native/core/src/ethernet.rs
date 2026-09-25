@@ -67,6 +67,14 @@ pub fn parse_header(payload: &[u8]) -> Option<Header<'_>> {
     })
 }
 
+/// The EtherType after the optional 802.1Q tag; `None` when the frame is too short.
+pub fn ethertype(raw: &[u8]) -> Option<u16> {
+    match u16_at(raw, 12)? {
+        ETHERTYPE_VLAN => u16_at(raw, 16),
+        t => Some(t),
+    }
+}
+
 /// Parse a frame carrying one of `ethertypes`; `None` otherwise, and for
 /// truncated frames or an inconsistent `Length`.
 pub fn parse_frame<'a>(raw: &'a [u8], ethertypes: &[u16]) -> Option<Frame<'a>> {
@@ -170,6 +178,8 @@ mod tests {
         assert_eq!((f.vlan_id, f.vlan_priority, f.header.app_id), (Some(100), Some(4), 0x4000));
         assert_eq!(f.header.apdu, &[0x60, 0x00]);
         assert!(parse_frame(&raw, &[ETHERTYPE_GOOSE]).is_none());
+        assert_eq!(ethertype(&raw), Some(ETHERTYPE_SV));
+        assert_eq!(ethertype(&raw[..17]), None);
         raw[21] = 0x0D; // Length past the end
         assert!(parse_frame(&raw[..28], &[ETHERTYPE_SV]).is_none());
     }

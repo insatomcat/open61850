@@ -22,7 +22,7 @@
 use core::fmt;
 
 use crate::ber::{self, BerError, BufferFull, Integer, Writer};
-use crate::data::{self, Data, DataError};
+use crate::data::{self, Data, DataError, DataList};
 use crate::ethernet::{self, Address, Frame, FrameError, Header, ETHERTYPE_GOOSE};
 use crate::time::UtcTime;
 
@@ -32,10 +32,10 @@ const TAG_ALL_DATA: u32 = 0xAB;
 /// Content of one GOOSE message. Strings are the VisibleString octets.
 ///
 /// `num_dat_set_entries` is written as given; it normally counts the
-/// top-level values of `all_data`, a preorder sequence (see [`crate::data`]).
-/// allData is left out when `all_data` is empty.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GoosePdu<'a> {
+/// top-level values of `all_data`, a preorder sequence (see [`crate::data`]):
+/// a slice of [`Data`] by default, or any [`DataList`]. allData is left out
+/// when `all_data` is empty.
+pub struct GoosePdu<'a, D: DataList<'a> + ?Sized = [Data<'a>]> {
     pub gocb_ref: &'a [u8],
     pub time_allowed_to_live: u32,
     pub dat_set: &'a [u8],
@@ -47,7 +47,7 @@ pub struct GoosePdu<'a> {
     pub conf_rev: u32,
     pub nds_com: bool,
     pub num_dat_set_entries: u32,
-    pub all_data: &'a [Data<'a>],
+    pub all_data: &'a D,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +98,7 @@ struct Fields {
 }
 
 impl Fields {
-    fn of(pdu: &GoosePdu<'_>) -> Result<Fields, DataError> {
+    fn of<'a, D: DataList<'a> + ?Sized>(pdu: &GoosePdu<'a, D>) -> Result<Fields, DataError> {
         let unsigned = |v: u32| Integer::unsigned(u64::from(v));
         Ok(Fields {
             tal: unsigned(pdu.time_allowed_to_live),
@@ -110,7 +110,7 @@ impl Fields {
         })
     }
 
-    fn content_len(&self, pdu: &GoosePdu<'_>) -> usize {
+    fn content_len<'a, D: DataList<'a> + ?Sized>(&self, pdu: &GoosePdu<'a, D>) -> usize {
         let tlv = |content: usize| crate::ber::tlv_len(0x80, content);
         tlv(pdu.gocb_ref.len())
             + tlv(self.tal.as_slice().len())
@@ -126,7 +126,12 @@ impl Fields {
             + if pdu.all_data.is_empty() { 0 } else { crate::ber::tlv_len(TAG_ALL_DATA, self.all_data) }
     }
 
-    fn write(&self, pdu: &GoosePdu<'_>, content_len: usize, w: &mut Writer<'_>) -> Result<(), EncodeError> {
+    fn write<'a, D: DataList<'a> + ?Sized>(
+        &self,
+        pdu: &GoosePdu<'a, D>,
+        content_len: usize,
+        w: &mut Writer<'_>,
+    ) -> Result<(), EncodeError> {
         let boolean = |v: bool| [if v { 0xFF } else { 0x00 }];
         w.put_header(TAG_GOOSE_PDU, content_len)?;
         w.put_tlv(0x80, pdu.gocb_ref)?;
@@ -151,13 +156,13 @@ impl Fields {
 }
 
 /// Octets of the encoded `IECGoosePdu`.
-pub fn pdu_len(pdu: &GoosePdu<'_>) -> Result<usize, EncodeError> {
+pub fn pdu_len<'a, D: DataList<'a> + ?Sized>(pdu: &GoosePdu<'a, D>) -> Result<usize, EncodeError> {
     let fields = Fields::of(pdu)?;
     Ok(crate::ber::tlv_len(TAG_GOOSE_PDU, fields.content_len(pdu)))
 }
 
 /// Encode the `IECGoosePdu` into `out`; return its length.
-pub fn encode_pdu(pdu: &GoosePdu<'_>, out: &mut [u8]) -> Result<usize, EncodeError> {
+pub fn encode_pdu<'a, D: DataList<'a> + ?Sized>(pdu: &GoosePdu<'a, D>, out: &mut [u8]) -> Result<usize, EncodeError> {
     let fields = Fields::of(pdu)?;
     let content_len = fields.content_len(pdu);
     let needed = crate::ber::tlv_len(TAG_GOOSE_PDU, content_len);
@@ -170,7 +175,11 @@ pub fn encode_pdu(pdu: &GoosePdu<'_>, out: &mut [u8]) -> Result<usize, EncodeErr
 
 /// Encode a complete GOOSE Ethernet frame (without FCS or padding) into
 /// `out`; return its length.
-pub fn encode_frame(pdu: &GoosePdu<'_>, address: &Address, out: &mut [u8]) -> Result<usize, EncodeError> {
+pub fn encode_frame<'a, D: DataList<'a> + ?Sized>(
+    pdu: &GoosePdu<'a, D>,
+    address: &Address,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
     let fields = Fields::of(pdu)?;
     let content_len = fields.content_len(pdu);
     let apdu_len = crate::ber::tlv_len(TAG_GOOSE_PDU, content_len);

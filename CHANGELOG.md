@@ -7,7 +7,10 @@
   Sampled Values decoding, GOOSE encoding and decoding, MMS `Data` values
   as a flat preorder sequence. Each codec accepts what the Python codec
   accepts and writes the octets it writes; tests compare them on random and
-  mutated input. A C API is to follow.
+  mutated input, and fuzzed.
+- `libopen61850`, the C API of these codecs (`native/capi`, header
+  `open61850.h`): no allocation, no state, return codes, decoded strings
+  pointing into the caller's frame. Tested from C under ASan and UBSan.
 - `goose.decode_goose_pdu` refuses a timeAllowedtoLive, stNum, sqNum,
   confRev or numDatSetEntries above 64 bits (these are INT32U; leading
   zeros are still accepted).
