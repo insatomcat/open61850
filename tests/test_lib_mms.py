@@ -415,9 +415,12 @@ def _brcb_values(instance: int, *, enabled: bool, resv_tms: int = 0) -> dict[str
 def test_rcb_names_and_groups() -> None:
     assert rcb.is_rcb_name("LLN0$BR$CB01") and rcb.is_rcb_name("LLN0$RP$URCB")
     assert not rcb.is_rcb_name("LLN0$BR$CB01$RptID")
-    groups = rcb.group_instances([ObjectName(f"LLN0$BR$CB_A0{i}", "LD0") for i in (2, 1)] + [ObjectName("LLN0$RP$U1", "LD0")])
+    groups = rcb.group_instances([ObjectName(f"LLN0$BR$CB_A0{i}", "LD0") for i in (2, 1)] + [ObjectName("LLN0$RP$U01", "LD0")])
     assert groups[("LD0", "LLN0$BR$CB_A")] == [ObjectName("LLN0$BR$CB_A01", "LD0"), ObjectName("LLN0$BR$CB_A02", "LD0")]
     assert list(groups) == [("LD0", "LLN0$BR$CB_A"), ("LD0", "LLN0$RP$U")]
+    # The instance number is two digits: a block name may end with a digit of its own.
+    assert rcb.instance_base("LLN0$BR$CB_ADD_DEP102") == "LLN0$BR$CB_ADD_DEP1"
+    assert rcb.instance_base("LLN0$BR$CB_ADD_DEP201") == "LLN0$BR$CB_ADD_DEP2"
 
 
 def test_find_free_instance(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:

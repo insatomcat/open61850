@@ -43,8 +43,13 @@ def is_buffered(rcb: ObjectName) -> bool:
 
 
 def instance_base(item: str) -> str:
-    """Name of a block without its trailing instance number (``..._DQPO03`` -> ``..._DQPO``)."""
-    return re.sub(r"\d+$", "", item)
+    """Name of a block without its two-digit instance number (IEC 61850-8-1).
+
+    ``..._DQPO03`` -> ``..._DQPO``, ``..._DQPO_DEP102`` -> ``..._DQPO_DEP1``.
+    A block that is not indexed but whose name ends with two digits would be
+    cut too; the SCL (``iec61850.scl``) gives the exact names.
+    """
+    return re.sub(r"\d{2}$", "", item)
 
 
 def group_instances(rcbs: list[ObjectName]) -> dict[tuple[Optional[str], str], list[ObjectName]]:

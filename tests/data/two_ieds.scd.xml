@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+  <Communication>
+    <SubNetwork name="STATION">
+      <ConnectedAP iedName="IED01_A" apName="AP1"><Address><P type="IP">192.0.2.10</P></Address></ConnectedAP>
+      <ConnectedAP iedName="IED01_B" apName="AP1"><Address><P type="IP">192.0.2.11</P></Address></ConnectedAP>
+    </SubNetwork>
+  </Communication>
+  <IED name="IED01_A" manufacturer="Vendor" type="Relay">
+    <AccessPoint name="AP1"><Server><LDevice inst="LD0">
+      <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+        <DataSet name="DS_PX_DEP1"/>
+        <ReportControl name="CB_LDPX_DQPO_DEP1" datSet="DS_PX_DEP1" buffered="true"><RptEnabled max="3"/></ReportControl>
+        <ReportControl name="CB_LDPX_DQPO_DEP2" datSet="DS_PX_DEP2" buffered="true"><RptEnabled max="3"/></ReportControl>
+        <ReportControl name="CB_LDADD_DQPO_DEP1" datSet="DS_ADD_DEP1" buffered="true"><RptEnabled max="2"/></ReportControl>
+        <ReportControl name="CB_LDOLD_DQPO_DEP1" datSet="DS_OLD" buffered="true"><RptEnabled max="2"/></ReportControl>
+        <ReportControl name="URCB_SINGLE" datSet="DS_U" indexed="false"/>
+      </LN0>
+    </LDevice>
+    <LDevice inst="CTRL">
+      <LN0 lnClass="LLN0" inst="" lnType="LLN0_T"/>
+      <LN prefix="CB" lnClass="CSWI" inst="1" lnType="CSWI_T">
+        <ReportControl name="CB_POS" datSet="DS_POS" buffered="true"><RptEnabled max="1"/></ReportControl>
+      </LN>
+    </LDevice></Server></AccessPoint>
+  </IED>
+  <IED name="IED01_B" manufacturer="Vendor" type="Relay">
+    <AccessPoint name="AP1"><Server><LDevice inst="LD0"><LN0 lnClass="LLN0" inst="" lnType="LLN0_T"/></LDevice></Server></AccessPoint>
+  </IED>
+</SCL>
