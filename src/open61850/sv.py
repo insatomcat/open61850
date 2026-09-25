@@ -238,3 +238,16 @@ def decode_int32_samples(sample: bytes) -> list[tuple[int, int]]:
 
 def encode_int32_samples(values: list[tuple[int, int]]) -> bytes:
     return b"".join(struct.pack("!iI", v, q) for v, q in values)
+
+
+# --- publication (open61850.sv_publisher) -------------------------------------
+
+_PUBLISHER_NAMES = ("Publisher", "SvStream", "Wave", "Fault", "three_phase")
+
+
+def __getattr__(name: str):  # noqa: ANN202 - lazy re-export, avoids an import cycle
+    if name in _PUBLISHER_NAMES:
+        from . import sv_publisher
+
+        return getattr(sv_publisher, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
