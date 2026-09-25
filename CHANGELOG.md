@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 (2026-09-25)
+
+First release on PyPI; same code as 0.1.0, plus the release workflow.
+
 ## 0.1.0 (2026-09-25)
 
 First release as a separate package; the code and its history come from the

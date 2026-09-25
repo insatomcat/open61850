@@ -25,4 +25,4 @@ exported by the package) are the public API; anything with a leading
 underscore is internal. Until 1.0, minor versions may change the API.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

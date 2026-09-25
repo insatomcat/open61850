@@ -9,7 +9,7 @@ It was written for a test and diagnostic platform of a digital substation proces
 ## Installation
 
 ```bash
-pip install git+https://github.com/insatomcat/open61850
+pip install open61850
 ```
 
 ## What is in it
