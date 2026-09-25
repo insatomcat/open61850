@@ -205,10 +205,16 @@ class RcbSettings:
     general_interrogation: bool = True
 
 
+_OBJECT_NON_EXISTENT = 10
+_EDITION_2_ONLY = ("ResvTms",)  # absent from edition 1 BRCBs
+
+
 def enable(client: MmsClient, rcb: ObjectName, settings: Optional[RcbSettings] = None) -> None:
     """Reserve, configure and enable a block, then trigger a general interrogation.
 
-    Each write is checked; the first failure raises :class:`RcbError`.
+    Each write is checked; the first failure raises :class:`RcbError`. A
+    BRCB without ResvTms (edition 1, e.g. the SSC600) is enabled without
+    reservation.
     """
     s = settings or RcbSettings()
     buffered = is_buffered(rcb)
@@ -236,6 +242,8 @@ def enable(client: MmsClient, rcb: ObjectName, settings: Optional[RcbSettings] =
         try:
             client.write(_attr(rcb, attribute), value)
         except DataAccessError as exc:
+            if attribute in _EDITION_2_ONLY and exc.code == _OBJECT_NON_EXISTENT:
+                continue
             raise RcbError(rcb, attribute, exc) from exc
 
 
@@ -243,6 +251,10 @@ def disable(client: MmsClient, rcb: ObjectName) -> None:
     """Disable a block and release its reservation."""
     client.write(_attr(rcb, "RptEna"), BoolData(False))
     if is_buffered(rcb):
-        client.write(_attr(rcb, "ResvTms"), IntData(0))
+        try:
+            client.write(_attr(rcb, "ResvTms"), IntData(0))
+        except DataAccessError as exc:
+            if exc.code != _OBJECT_NON_EXISTENT:
+                raise
     else:
         client.write(_attr(rcb, "Resv"), BoolData(False))

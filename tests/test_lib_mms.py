@@ -452,6 +452,26 @@ def test_find_free_reclaims_our_own_reservation(
     assert rcb.find_free(client, candidates, reclaim_own=False) is None
 
 
+def test_edition_1_brcb_without_resv_tms(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    values = {k: v for k, v in _brcb_values(1, enabled=False).items() if not k.endswith("$ResvTms")}
+
+    class Edition1(FakeModel):
+        def __call__(self, invoke_id: int, service: int, content: bytes, server: FakeServer) -> None:
+            if service == pdu.SERVICE_WRITE and b"ResvTms" in content:
+                server.respond(invoke_id, service, bytes.fromhex("80010a"))  # object-non-existent
+                return
+            super().__call__(invoke_id, service, content, server)
+
+    model = Edition1(values)
+    client, _ = serve(model)
+    block = ObjectName(f"{BRCB}1", "LD0")
+    assert rcb.read_status(client, block).free
+    rcb.enable(client, block)
+    assert [n.rsplit("$", 1)[1] for n, _ in model.writes][:2] == ["IntgPd", "TrgOps"]
+    rcb.disable(client, block)
+    assert model.writes[-1] == (f"{BRCB}1$RptEna", BoolData(False))
+
+
 def test_disable_releases_a_brcb(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
     model = FakeModel(_brcb_values(1, enabled=True, resv_tms=5))
     client, _ = serve(model)

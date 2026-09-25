@@ -88,11 +88,12 @@ def cmd_dataset(client: MmsClient, args: argparse.Namespace) -> None:
 
 def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Queue[InformationReport]) -> None:
     target: ObjectName = args.name
-    if rcb.is_rcb_name(target.item) and target.item[-1].isdigit():
-        candidates = [target]
-    else:
-        base = rcb.instance_base(target.item)
-        candidates = [r for r in all_rcbs(client) if r.domain == target.domain and rcb.instance_base(r.item) == base]
+    names = client.get_name_list(OBJECT_CLASS_NAMED_VARIABLE, target.domain)
+    blocks = [ObjectName(n, target.domain) for n in names if rcb.is_rcb_name(n)]
+    # An instance by its full name, or a block by its name without instance number.
+    candidates = [b for b in blocks if b.item == target.item] or [
+        b for b in blocks if rcb.instance_base(b.item) == target.item
+    ]
     if not candidates:
         sys.exit(f"no report control block matches {target}")
     status = rcb.find_free(client, candidates)
