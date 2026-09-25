@@ -105,6 +105,14 @@ def test_goose_rejects_missing_mandatory_field() -> None:
         goose.decode_goose_pdu(goose.ber.encode_tlv(0x61, fields))
 
 
+def test_goose_empty_data_set_keeps_all_data() -> None:
+    # allData [11] is not OPTIONAL in IEC 61850-8-1 (libiec61850 writes it too).
+    pdu = goose.GoosePDU(**{**_goose_pdu().__dict__, "all_data": [], "num_dat_set_entries": 0})
+    apdu = goose.encode_goose_pdu(pdu)
+    assert apdu.endswith(b"\x8a\x01\x00\xab\x00")
+    assert goose.decode_goose_pdu(apdu).all_data == []
+
+
 def test_goose_counters_stop_at_64_bits() -> None:
     apdu = goose.encode_goose_pdu(_goose_pdu())
     fields = list(goose.ber.iter_tlvs(goose.ber.decode_tlv(apdu).value))

@@ -15,6 +15,7 @@
 //!
 //! [`decode_pdu`] checks the whole PDU (every ASDU, noASDU) before returning;
 //! [`SvPdu::asdus`] then walks the ASDUs again without allocating.
+//! [`decode_pdu_with`] hands each ASDU over as it is decoded, in one pass.
 
 use core::fmt;
 
@@ -190,6 +191,13 @@ impl<'a> Iterator for Asdus<'a> {
 ///
 /// Bytes after the `SavPdu` TLV are ignored.
 pub fn decode_pdu(apdu: &[u8]) -> Result<SvPdu<'_>, SvError> {
+    decode_pdu_with(apdu, |_, _| {})
+}
+
+/// As [`decode_pdu`], handing each ASDU with its index to `each` as soon as
+/// it is decoded: one pass instead of two. The PDU is only valid if the
+/// result is `Ok`; after an error, forget the ASDUs already handed over.
+pub fn decode_pdu_with<'a>(apdu: &'a [u8], mut each: impl FnMut(usize, Asdu<'a>)) -> Result<SvPdu<'a>, SvError> {
     let outer = ber::decode_tlv(apdu, 0)?;
     if outer.tag != TAG_SAV_PDU {
         return Err(SvError::UnexpectedTag { expected: TAG_SAV_PDU, found: outer.tag });
@@ -213,7 +221,7 @@ pub fn decode_pdu(apdu: &[u8]) -> Result<SvPdu<'_>, SvError> {
                     if item.tag != TAG_ASDU {
                         return Err(SvError::UnexpectedTag { expected: TAG_ASDU, found: item.tag });
                     }
-                    decode_asdu(item.value)?;
+                    each(count, decode_asdu(item.value)?);
                     count += 1;
                 }
             }
@@ -225,6 +233,26 @@ pub fn decode_pdu(apdu: &[u8]) -> Result<SvPdu<'_>, SvError> {
         return Err(SvError::NoAsduMismatch { declared, present: count });
     }
     Ok(SvPdu { security, count, content: outer.value })
+}
+
+/// As [`decode_pdu_with`], from the APPID field.
+pub fn decode_payload_with<'a>(
+    payload: &'a [u8],
+    each: impl FnMut(usize, Asdu<'a>),
+) -> Result<(Header<'a>, SvPdu<'a>), SvError> {
+    let header = ethernet::parse_header(payload).ok_or(SvError::Header)?;
+    Ok((header, decode_pdu_with(header.apdu, each)?))
+}
+
+/// As [`decode_pdu_with`], from an Ethernet frame (see [`decode_frame`]).
+pub fn decode_frame_with<'a>(
+    raw: &'a [u8],
+    each: impl FnMut(usize, Asdu<'a>),
+) -> Result<Option<(Frame<'a>, SvPdu<'a>)>, SvError> {
+    match ethernet::parse_frame(raw, &[ethernet::ETHERTYPE_SV]) {
+        None => Ok(None),
+        Some(frame) => Ok(Some((frame, decode_pdu_with(frame.header.apdu, each)?))),
+    }
 }
 
 /// Decode from the APPID field, the bytes that follow the EtherType.
@@ -281,6 +309,13 @@ mod tests {
         let mut samples = int32_samples(asdus[0].sample).unwrap();
         assert_eq!(samples.next(), Some((-2, 0x2000)));
         assert_eq!(int32_samples(asdus[1].sample).unwrap().next(), Some((0x0800_0000, 0x0700_0000)));
+    }
+
+    #[test]
+    fn hands_the_asdus_over_in_one_pass() {
+        let mut seen = [0u16; 2];
+        let pdu = decode_pdu_with(&PDU, |i, a| seen[i] = a.smp_cnt).unwrap();
+        assert_eq!((pdu.len(), seen), (2, [1, 2]));
     }
 
     #[test]

@@ -225,7 +225,7 @@ typedef struct {
 /**
  * A GOOSE message to encode. A string with `len` 0 may have a NULL `ptr`;
  * `go_id` is left out when its `ptr` is NULL. `all_data` holds
- * `all_data_len` values in preorder; allData is left out when there are none.
+ * `all_data_len` values in preorder; with none, allData is written empty.
  */
 typedef struct {
   o61850_bytes gocb_ref;
@@ -302,7 +302,7 @@ const char *o61850_strerror(int32_t code);
  * The first `capacity` ASDUs go to `asdus`, and `count` (may be NULL)
  * receives the number of ASDUs; `O61850_ERR_BUFFER` when it exceeds
  * `capacity`. For a refused frame, `info` holds the MAC addresses and the
- * VLAN tag when present, zeros otherwise.
+ * VLAN tag when present, zeros otherwise, and `asdus` is unspecified.
  *
  * # Safety
  * `frame` valid for `len` octets; each non-NULL output pointer valid for a

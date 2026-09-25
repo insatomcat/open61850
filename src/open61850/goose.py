@@ -160,9 +160,8 @@ def encode_goose_pdu(pdu: GoosePDU) -> bytes:
         ctx(_NDS_COM, ber.encode_boolean(pdu.nds_com)),
         ctx(_NUM_ENTRIES, ber.encode_unsigned(pdu.num_dat_set_entries)),
     ]
-    all_data = b"".join(encode_data(d) for d in pdu.all_data)
-    if all_data:
-        parts.append(ctx(_ALL_DATA, all_data, constructed=True))
+    # allData is not OPTIONAL in IEC 61850-8-1: an empty data set is written as ab 00.
+    parts.append(ctx(_ALL_DATA, b"".join(encode_data(d) for d in pdu.all_data), constructed=True))
     return ber.encode_tlv(TAG_GOOSE_PDU, b"".join(parts))
 
 

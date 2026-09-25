@@ -33,8 +33,8 @@ const TAG_ALL_DATA: u32 = 0xAB;
 ///
 /// `num_dat_set_entries` is written as given; it normally counts the
 /// top-level values of `all_data`, a preorder sequence (see [`crate::data`]):
-/// a slice of [`Data`] by default, or any [`DataList`]. allData is left out
-/// when `all_data` is empty.
+/// a slice of [`Data`] by default, or any [`DataList`]. allData is written
+/// even when `all_data` is empty (`ab 00`): it is not OPTIONAL in 8-1.
 pub struct GoosePdu<'a, D: DataList<'a> + ?Sized = [Data<'a>]> {
     pub gocb_ref: &'a [u8],
     pub time_allowed_to_live: u32,
@@ -123,7 +123,7 @@ impl Fields {
             + tlv(self.conf_rev.as_slice().len())
             + tlv(1)
             + tlv(self.entries.as_slice().len())
-            + if pdu.all_data.is_empty() { 0 } else { crate::ber::tlv_len(TAG_ALL_DATA, self.all_data) }
+            + crate::ber::tlv_len(TAG_ALL_DATA, self.all_data)
     }
 
     fn write<'a, D: DataList<'a> + ?Sized>(
@@ -147,10 +147,8 @@ impl Fields {
         w.put_tlv(0x88, self.conf_rev.as_slice())?;
         w.put_tlv(0x89, &boolean(pdu.nds_com))?;
         w.put_tlv(0x8A, self.entries.as_slice())?;
-        if !pdu.all_data.is_empty() {
-            w.put_header(TAG_ALL_DATA, self.all_data)?;
-            data::write_sequence(pdu.all_data, w)?;
-        }
+        w.put_header(TAG_ALL_DATA, self.all_data)?;
+        data::write_sequence(pdu.all_data, w)?;
         Ok(())
     }
 }

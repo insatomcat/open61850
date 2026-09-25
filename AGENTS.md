@@ -182,7 +182,9 @@ unsigned; `Writer` into a caller's buffer, minimal lengths and INTEGERs),
 `ethernet` (`parse_header` starts after the EtherType, `parse_frame` at the
 MAC; `Address` writes the header), `time` (UtcTime), `sv` (`decode_pdu`
 checks every ASDU and noASDU, then `asdus()` walks them again;
-`decode_payload` and `decode_frame`; `int32_samples`), `data` (MMS `Data`
+`decode_payload` and `decode_frame`; `decode_pdu_with` and its `_payload`
+and `_frame` variants hand each ASDU over in one pass, which the C API
+uses; `int32_samples`), `data` (MMS `Data`
 as a flat preorder sequence: `Structure(n)` and `Array(n)` are followed by
 their members; written with `sequence_len` then `write_sequence`, nesting
 at most 32 deep; read with `check_sequence`, which checks every structure
@@ -213,8 +215,8 @@ bits, IA5 strings, floats and times of other sizes, INTEGERs beyond 64
 bits, 10 to 80 nested structures) and byte mutations: same refusals, same
 values. Docker on the dev Mac (`cargo run --release -p open61850-core
 --example ...`): the 2-ASDU frame of `tools/bench_sv_decode.py` decodes,
-samples read, in about 105 ns (`bench_sv_decode`); a 168-byte trip GOOSE
-of 10 entries encodes in about 130 ns and decodes, values read, in about
+samples read, in about 97 ns (`bench_sv_decode`); a 168-byte trip GOOSE
+of 10 entries encodes in about 113 ns and decodes, values read, in about
 100 ns (`bench_goose`).
 
 The encoder reads allData through the `DataList` trait (a slice, an
@@ -239,6 +241,34 @@ frame the encoder writes decodes to the same fields and values, floats by
 their bits); CI runs each for a minute. A first local minute each: 38.6 M,
 15.8 M and 1.8 M runs, nothing found; a BinaryTime written backwards was
 found in seconds.
+
+Compared with the C codecs of a private protection runtime (a first-ASDU
+SV decoder, a flat GOOSE encoder, a structural GOOSE decoder; their code
+stays out of this repository), through the C API on the same 220,000
+frames (9-2LE and 2-ASDU 61869-9 streams, trip GOOSE, the odd forms of the
+parity tests, byte mutations of all) and 200,000 random GOOSE messages:
+- Realistic traffic: same fields on every frame. Their SV decoder reads the
+  first ASDU only: half the samples of a 2-ASDU stream are lost silently.
+- It keeps only the low 5 bits of a tag: an application-class TLV
+  `62 02 0f a0` was read as smpCnt (4000 instead of 2291), another as the
+  svID; accepted frames, wrong values. It checks neither noASDU nor the
+  mandatory fields (an ASDU without smpCnt reports 0) nor what follows the
+  first ASDU. It refuses sample buffers other than 8 channels, lengths on
+  more than 2 octets and high tag numbers.
+- Their GOOSE decoder is stricter than ours: numDatSetEntries against the
+  entries present, VisibleString alphabet, fields in order and in context
+  class, 32-bit counters, simulation and ndsCom on one octet, t on 8
+  octets, Data sizes, nesting up to 8, nothing after the PDU inside
+  Length. Ours follows `goose.py` and accepts these; a strict mode for
+  protection use is an open question.
+- Encoding: identical octets on every message, once ours wrote allData for
+  an empty data set (`ab 00`): allData is not OPTIONAL in 8-1, libiec61850
+  writes it too, and `goose.py` used to leave it out.
+- Speed through the C API (arm64 Docker on the dev Mac): SV 1 ASDU x 8
+  channels 20 ns for theirs, 39 ns for ours with every check; 2 ASDUs 21 ns
+  (first only) and 67 ns (both); trip GOOSE encoding 71 and 186 ns (the C
+  array is read in place, twice: measure, then write), decoding 88 and
+  108 ns without values, 145 ns with them.
 
 Building locally without Rust installed: Docker (`rust:1-slim-bookworm`
 plus `maturin`), or `quay.io/pypa/manylinux2014_x86_64` for an x86_64 wheel.

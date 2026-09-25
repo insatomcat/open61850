@@ -189,9 +189,15 @@ pub fn sequence_len<'a, L: DataList<'a> + ?Sized>(items: &L) -> Result<usize, Da
 }
 
 fn write_one<'a, L: DataList<'a> + ?Sized>(items: &L, i: usize, w: &mut Writer<'_>) -> Result<usize, DataError> {
-    let (tag, len, next) = measure(items, i, 0)?;
     let item = items.get(i).ok_or(DataError::MissingMembers)?;
-    w.put_header(tag, len)?;
+    let (len, next) = match item {
+        Data::Structure(_) | Data::Array(_) => {
+            let (_, len, next) = measure(items, i, 0)?;
+            (len, next)
+        }
+        _ => (leaf_len(&item)?, i + 1),
+    };
+    w.put_header(item.tag(), len)?;
     match item {
         Data::Boolean(v) => w.put(&[if v { 0xFF } else { 0x00 }])?,
         Data::Integer(v) => w.put(Integer::signed(v).as_slice())?,

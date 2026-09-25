@@ -183,7 +183,7 @@ pub struct o61850_data {
 
 /// A GOOSE message to encode. A string with `len` 0 may have a NULL `ptr`;
 /// `go_id` is left out when its `ptr` is NULL. `all_data` holds
-/// `all_data_len` values in preorder; allData is left out when there are none.
+/// `all_data_len` values in preorder; with none, allData is written empty.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct o61850_goose_pdu {
@@ -357,37 +357,42 @@ fn sv_code(e: SvError) -> i32 {
     }
 }
 
+fn to_c_asdu(a: &sv::Asdu<'_>) -> o61850_sv_asdu {
+    o61850_sv_asdu {
+        sv_id: bytes(a.sv_id),
+        dat_set: optional(a.dat_set),
+        smp_cnt: a.smp_cnt,
+        conf_rev: a.conf_rev,
+        has_refr_tm: a.refr_tm.is_some(),
+        refr_tm: utc(a.refr_tm.unwrap_or_default()),
+        smp_synch: a.smp_synch,
+        has_smp_rate: a.smp_rate.is_some(),
+        smp_rate: a.smp_rate.unwrap_or(0),
+        sample: bytes(a.sample),
+        has_smp_mod: a.smp_mod.is_some(),
+        smp_mod: a.smp_mod.unwrap_or(0),
+        gm_identity: optional(a.gm_identity),
+    }
+}
+
+/// The ASDU sink of a C caller: the first `capacity` go to `asdus`.
+///
+/// # Safety
+/// `asdus` valid for `capacity` elements (checked non-NULL when `capacity` > 0).
+unsafe fn asdu_sink<'a>(asdus: *mut o61850_sv_asdu, capacity: usize) -> impl FnMut(usize, sv::Asdu<'a>) {
+    move |i, a| {
+        if i < capacity {
+            // SAFETY: i < capacity, and the caller's array holds capacity elements.
+            unsafe { asdus.add(i).write(to_c_asdu(&a)) };
+        }
+    }
+}
+
 /// # Safety
 /// As `o61850_sv_decode_frame` for the output pointers.
-unsafe fn sv_output(
-    pdu: &SvPdu<'_>,
-    security: *mut o61850_bytes,
-    asdus: *mut o61850_sv_asdu,
-    capacity: usize,
-    count: *mut usize,
-) -> i32 {
+unsafe fn sv_output(pdu: &SvPdu<'_>, security: *mut o61850_bytes, capacity: usize, count: *mut usize) -> i32 {
     set(security, optional(pdu.security));
     set(count, pdu.len());
-    if capacity > 0 && asdus.is_null() {
-        return O61850_ERR_NULL;
-    }
-    for (i, a) in pdu.asdus().take(capacity).enumerate() {
-        asdus.add(i).write(o61850_sv_asdu {
-            sv_id: bytes(a.sv_id),
-            dat_set: optional(a.dat_set),
-            smp_cnt: a.smp_cnt,
-            conf_rev: a.conf_rev,
-            has_refr_tm: a.refr_tm.is_some(),
-            refr_tm: utc(a.refr_tm.unwrap_or_default()),
-            smp_synch: a.smp_synch,
-            has_smp_rate: a.smp_rate.is_some(),
-            smp_rate: a.smp_rate.unwrap_or(0),
-            sample: bytes(a.sample),
-            has_smp_mod: a.smp_mod.is_some(),
-            smp_mod: a.smp_mod.unwrap_or(0),
-            gm_identity: optional(a.gm_identity),
-        });
-    }
     if pdu.len() > capacity {
         O61850_ERR_BUFFER
     } else {
@@ -403,7 +408,7 @@ unsafe fn sv_output(
 /// The first `capacity` ASDUs go to `asdus`, and `count` (may be NULL)
 /// receives the number of ASDUs; `O61850_ERR_BUFFER` when it exceeds
 /// `capacity`. For a refused frame, `info` holds the MAC addresses and the
-/// VLAN tag when present, zeros otherwise.
+/// VLAN tag when present, zeros otherwise, and `asdus` is unspecified.
 ///
 /// # Safety
 /// `frame` valid for `len` octets; each non-NULL output pointer valid for a
@@ -425,10 +430,13 @@ pub unsafe extern "C" fn o61850_sv_decode_frame(
         if ethernet::ethertype(raw) != Some(ethernet::ETHERTYPE_SV) {
             return O61850_ERR_ETHERTYPE;
         }
-        match sv::decode_frame(raw) {
+        if capacity > 0 && asdus.is_null() {
+            return O61850_ERR_NULL;
+        }
+        match sv::decode_frame_with(raw, asdu_sink(asdus, capacity)) {
             Ok(Some((f, pdu))) => {
                 set(info, frame_info(&f));
-                sv_output(&pdu, security, asdus, capacity, count)
+                sv_output(&pdu, security, capacity, count)
             }
             Ok(None) => O61850_ERR_HEADER,
             Err(e) => sv_code(e),
@@ -454,10 +462,13 @@ pub unsafe extern "C" fn o61850_sv_decode_payload(
     guard(|| {
         set(count, 0);
         let Some(raw) = input(payload, len) else { return O61850_ERR_NULL };
-        match sv::decode_payload(raw) {
+        if capacity > 0 && asdus.is_null() {
+            return O61850_ERR_NULL;
+        }
+        match sv::decode_payload_with(raw, asdu_sink(asdus, capacity)) {
             Ok((header, pdu)) => {
                 set(info, header_info(&header));
-                sv_output(&pdu, security, asdus, capacity, count)
+                sv_output(&pdu, security, capacity, count)
             }
             Err(e) => sv_code(e),
         }
@@ -597,18 +608,13 @@ unsafe fn goose_encode(
         app_id: a.app_id,
         vlan: a.has_vlan.then_some(Vlan { id: a.vlan_id, priority: a.vlan_priority }),
     });
-    let needed = match goose::pdu_len(&message) {
-        Ok(n) => n + address.map_or(0, |a| a.header_len()),
-        Err(e) => return encode_code(e),
-    };
-    if out_size < needed {
-        set(out_len, needed);
-        return O61850_ERR_BUFFER;
-    }
-    if out.is_null() {
+    let buf: &mut [u8] = if out_size == 0 {
+        &mut []
+    } else if out.is_null() {
         return O61850_ERR_NULL;
-    }
-    let buf = slice::from_raw_parts_mut(out, out_size);
+    } else {
+        slice::from_raw_parts_mut(out, out_size)
+    };
     let written = match &address {
         Some(a) => goose::encode_frame(&message, a, buf),
         None => goose::encode_pdu(&message, buf),
@@ -617,6 +623,10 @@ unsafe fn goose_encode(
         Ok(n) => {
             set(out_len, n);
             O61850_OK
+        }
+        Err(EncodeError::BufferTooSmall { needed }) => {
+            set(out_len, needed);
+            O61850_ERR_BUFFER
         }
         Err(e) => encode_code(e),
     }
