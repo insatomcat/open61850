@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import itertools
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -39,6 +39,7 @@ from .errors import (
     ServiceError,
 )
 from .pdu import InformationReport, ObjectName
+from .reference import Name, data_set_object_name, to_object_name
 from .types import MmsType, get_variable_access_attributes_response
 from .transport import IsoConnection
 
@@ -262,43 +263,50 @@ class MmsClient:
             continue_after = page[-1]
         return names
 
-    def read_many(self, names: list[ObjectName]) -> list[pdu.AccessResult]:
-        """Read several variables in one request; failures come back as DataAccessError values."""
+    def read_many(self, names: Sequence[Name]) -> list[pdu.AccessResult]:
+        """Read several variables in one request; failures come back as DataAccessError values.
+
+        Every method taking a name accepts an :class:`ObjectName`, a
+        :class:`~open61850.mms.reference.Reference`, or text:
+        ``IED01_LD0/LLN0.Mod.stVal[ST]`` or ``IED01_LD0/LLN0$ST$Mod$stVal``.
+        """
+        names = [to_object_name(n) for n in names]
         results = pdu.read_response(self._service(pdu.read_request(names), pdu.SERVICE_READ))
         if len(results) != len(names):
             raise MmsProtocolError(f"read {len(names)} variables, got {len(results)} results")
         return results
 
-    def read(self, name: ObjectName) -> IECData:
+    def read(self, name: Name) -> IECData:
         """Read one variable; raise DataAccessError on failure."""
         (result,) = self.read_many([name])
         if isinstance(result, DataAccessError):
             raise result
         return result
 
-    def write_many(self, names: list[ObjectName], values: list[IECData]) -> list[Optional[DataAccessError]]:
+    def write_many(self, names: Sequence[Name], values: list[IECData]) -> list[Optional[DataAccessError]]:
+        names = [to_object_name(n) for n in names]
         results = pdu.write_response(self._service(pdu.write_request(names, values), pdu.SERVICE_WRITE))
         if len(results) != len(names):
             raise MmsProtocolError(f"wrote {len(names)} variables, got {len(results)} results")
         return results
 
-    def write(self, name: ObjectName, value: IECData) -> None:
+    def write(self, name: Name, value: IECData) -> None:
         """Write one variable; raise DataAccessError on failure."""
         (error,) = self.write_many([name], [value])
         if error is not None:
             raise error
 
-    def get_type(self, name: ObjectName) -> MmsType:
+    def get_type(self, name: Name) -> MmsType:
         """Type of a variable (GetVariableAccessAttributes)."""
         content = self._service(
-            pdu.get_variable_access_attributes_request(name), pdu.SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES
+            pdu.get_variable_access_attributes_request(to_object_name(name)), pdu.SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES
         )
         return get_variable_access_attributes_response(content)
 
-    def get_data_set_members(self, name: ObjectName) -> list[ObjectName]:
-        """Members of a named variable list (an IEC 61850 data set)."""
+    def get_data_set_members(self, name: Name) -> list[ObjectName]:
+        """Members of a data set: ``LD/LLN0.DSName``, ``LD/LLN0$DSName`` or its ObjectName."""
         content = self._service(
-            pdu.get_named_variable_list_attributes_request(name),
+            pdu.get_named_variable_list_attributes_request(data_set_object_name(name)),
             pdu.SERVICE_GET_NAMED_VARIABLE_LIST_ATTRIBUTES,
         )
         return pdu.get_named_variable_list_attributes_response(content)

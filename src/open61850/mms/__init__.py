@@ -11,6 +11,8 @@
 - :mod:`.rcb`: report control block status, reservation and enabling.
 - :mod:`.control`: controls (direct and SBO, normal and enhanced security).
 - :mod:`.types`: type descriptions (GetVariableAccessAttributes) and value labelling.
+- :mod:`.reference`: IEC 61850 references (``LD/LN.DO.DA [FC]``) and their MMS names.
+- :mod:`.model`: the server's data model (logical devices, nodes, data, control blocks), discovered.
 """
 
 from . import association
@@ -34,6 +36,8 @@ from .pdu import (
     ObjectName,
 )
 from .types import MmsType
+from .reference import Reference, to_object_name
+from .model import LogicalDevice, LogicalNode, ServerModel, discover
 from .report import OptFlds, ReasonCode, Report, ReportEntry, TrgOps, decode_report, is_report
 
 __all__ = [
@@ -43,4 +47,5 @@ __all__ = [
     "MmsError", "MmsConnectionError", "MmsTimeout", "MmsProtocolError", "MmsReject",
     "DataAccessError", "ServiceError",
     "operate", "Origin", "ControlResult", "ControlError", "LastApplError",
+    "Reference", "to_object_name", "discover", "ServerModel", "LogicalDevice", "LogicalNode",
 ]

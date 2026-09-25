@@ -5,11 +5,17 @@
 
     open61850-mms HOST[:PORT] association
     open61850-mms HOST[:PORT] domains
+    open61850-mms HOST[:PORT] browse [LD[/LN]] [--fc FC] [--flat] [--types]
     open61850-mms HOST[:PORT] rcbs [--status]
-    open61850-mms HOST[:PORT] read DOMAIN/ITEM [DOMAIN/ITEM ...]
-    open61850-mms HOST[:PORT] dataset DOMAIN/LLN0$DSNAME
+    open61850-mms HOST[:PORT] read REFERENCE [REFERENCE ...]
+    open61850-mms HOST[:PORT] dataset LD/LLN0.DSNAME
     open61850-mms HOST[:PORT] subscribe DOMAIN/LLN0$BR$NAME [--integrity-ms 2000]
-    open61850-mms HOST[:PORT] operate DOMAIN/LN$CO$DO open|close|true|false|NUMBER
+    open61850-mms HOST[:PORT] operate LD/LN.DO open|close|true|false|NUMBER
+
+A reference is ``LD/LN.DO.DA[FC]`` (``IED01_LD0/LLN0.Mod.stVal[ST]``) or the
+MMS name ``LD/LN$FC$DO$DA``. ``browse`` prints the data model: logical
+devices, logical nodes, data objects with their attributes and FCs, control
+blocks and data sets; ``--flat`` gives one reference per line.
 
 ``subscribe`` takes a block or the name of a group without its instance
 number (``IED01_LD0/LLN0$BR$CB_LDPHAS1_DQPO``): it picks a free instance,
@@ -40,16 +46,75 @@ from open61850.mms import (
     decode_report,
     is_report,
     MmsType,
+    ServerModel,
     control,
+    discover,
     rcb,
+    to_object_name,
 )
+from open61850.mms.reference import data_set_object_name
+from open61850.mms.types import describe
 
 
 def parse_name(text: str) -> ObjectName:
-    if "/" not in text:
-        raise argparse.ArgumentTypeError(f"expected DOMAIN/ITEM, got {text!r}")
-    domain, item = text.split("/", 1)
-    return ObjectName(item, domain)
+    try:
+        return to_object_name(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def parse_data_set(text: str) -> ObjectName:
+    try:
+        return data_set_object_name(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def parse_control(text: str) -> ObjectName:
+    try:
+        return control.control_object_name(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def model_lines(model: ServerModel, fc: Optional[str] = None, flat: bool = False) -> list[str]:
+    """The text ``browse`` prints."""
+    lines: list[str] = []
+    for device in model.logical_devices.values():
+        if not flat:
+            lines.append(device.name)
+        for node in device.logical_nodes.values():
+            refs = node.references(fc)
+            blocks = node.control_blocks(fc)
+            if fc is not None and not refs and not blocks:
+                continue
+            if flat:
+                lines += [f"{r} {describe(node.type_of(r))}" if node.type else str(r) for r in refs + blocks]
+                continue
+            lines.append(f"  {node.name}")
+            for do in node.data_objects():
+                attributes = [r for r in refs if r.path[0] == do]
+                if not attributes:
+                    continue
+                lines.append(f"    {do}")
+                for r in attributes:
+                    typed = f" {describe(node.type_of(r))}" if node.type else ""
+                    lines.append(f"      {'.'.join(r.path[1:]) or '(value)'} [{r.fc}]{typed}")
+            for block in blocks:
+                lines.append(f"    {block.path[0]} [{block.fc}]")
+            if fc is None:
+                lines += [f"    data set {name}" for name in node.data_sets]
+    return lines
+
+
+def cmd_browse(client: MmsClient, args: argparse.Namespace) -> None:
+    ld, _, ln = (args.where or "").partition("/")
+    model = discover(client, [ld] if ld else None, types=args.types)
+    if ln:
+        for device in model.logical_devices.values():
+            device.logical_nodes = {k: v for k, v in device.logical_nodes.items() if k == ln}
+    for line in model_lines(model, args.fc, args.flat):
+        print(line)
 
 
 def all_rcbs(client: MmsClient) -> list[ObjectName]:
@@ -186,17 +251,22 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("association")
     sub.add_parser("domains")
+    p = sub.add_parser("browse")
+    p.add_argument("where", nargs="?", help="LD or LD/LN (default: the whole server)")
+    p.add_argument("--fc", type=str.upper, help="only this functional constraint")
+    p.add_argument("--flat", action="store_true", help="one reference per line")
+    p.add_argument("--types", action="store_true", help="read the types (one request per logical node)")
     p = sub.add_parser("rcbs")
     p.add_argument("--status", action="store_true", help="read RptEna/Resv of every instance")
     p = sub.add_parser("read")
     p.add_argument("names", nargs="+", type=parse_name)
     p = sub.add_parser("dataset")
-    p.add_argument("name", type=parse_name)
+    p.add_argument("name", type=parse_data_set)
     p = sub.add_parser("subscribe")
     p.add_argument("name", type=parse_name)
     p.add_argument("--integrity-ms", type=int, default=2000)
     p = sub.add_parser("operate")
-    p.add_argument("name", type=parse_name)
+    p.add_argument("name", type=parse_control)
     p.add_argument("value", type=parse_ctl_val)
     p.add_argument("--ctl-num", type=int, default=0)
     p.add_argument("--test", action="store_true", help="set the Test flag")
@@ -210,7 +280,8 @@ def main() -> int:
                 cmd_subscribe(client, args, reports)
             else:
                 {
-                    "association": cmd_association, "domains": cmd_domains, "rcbs": cmd_rcbs, "read": cmd_read, "dataset": cmd_dataset,
+                    "association": cmd_association, "domains": cmd_domains, "browse": cmd_browse, "rcbs": cmd_rcbs,
+                    "read": cmd_read, "dataset": cmd_dataset,
                     "operate": cmd_operate,
                 }[args.command](
                     client, args

@@ -43,6 +43,7 @@ from ..data import (
 from .client import MmsClient
 from .errors import DataAccessError, MmsError
 from .pdu import InformationReport, ObjectName
+from .reference import Name, Reference, to_object_name
 
 __all__ = [
     "OR_CAT_NOT_SUPPORTED",
@@ -195,8 +196,16 @@ class ControlResult:
         return f"{CTL_MODELS.get(self.ctl_model, self.ctl_model)}, ctlNum {self.ctl_num}{end}, {self.duration * 1000:.0f} ms"
 
 
-def control_object_name(name: ObjectName) -> ObjectName:
-    """The data object of a control reference (``X$CO$Pos$Oper`` becomes ``X$CO$Pos``)."""
+def control_object_name(name: Name) -> ObjectName:
+    """The data object of a control reference (``X$CO$Pos$Oper`` becomes ``X$CO$Pos``).
+
+    An IEC 61850 reference without FC (``LD/CSWI1.Pos``) is taken in FC CO.
+    """
+    if isinstance(name, str) and "$" not in name:
+        name = Reference.parse(name)
+    if isinstance(name, Reference) and name.fc is None:
+        name = name.with_fc("CO")
+    name = to_object_name(name)
     head, _, last = name.item.rpartition("$")
     if head and last in _CONTROL_ATTRIBUTES:
         return ObjectName(head, name.domain)
@@ -215,7 +224,7 @@ def ctl_model_name(obj: ObjectName) -> ObjectName:
     return ObjectName(f"{ln}$CF${rest}$ctlModel", obj.domain)
 
 
-def read_ctl_model(client: MmsClient, obj: ObjectName) -> int:
+def read_ctl_model(client: MmsClient, obj: Name) -> int:
     name = ctl_model_name(control_object_name(obj))
     try:
         value = client.read(name)
@@ -314,7 +323,7 @@ def _write(client: MmsClient, watch: _Watch, stage: str, name: ObjectName, value
 
 def operate(
     client: MmsClient,
-    name: ObjectName,
+    name: Name,
     ctl_val: CtlValue,
     *,
     origin: Origin = Origin(),
@@ -326,7 +335,7 @@ def operate(
     termination_timeout: float = 5.0,
     error_grace: float = 0.5,
 ) -> ControlResult:
-    """Run one command on ``name`` (``X$CO$Pos`` or ``X$CO$Pos$Oper``).
+    """Run one command on ``name`` (``X$CO$Pos``, ``X$CO$Pos$Oper`` or ``LD/X.Pos``).
 
     ``ctl_model`` is read from ``X$CF$Pos$ctlModel`` when not given. Raises
     :class:`ControlError` when the server refuses the command or reports a

@@ -45,6 +45,7 @@ __all__ = [
     "decode_type_specification",
     "get_variable_access_attributes_response",
     "label",
+    "describe",
 ]
 
 
@@ -131,6 +132,24 @@ def get_variable_access_attributes_response(content: bytes) -> MmsType:
         if tlv.tag == 0xA2:  # typeDescription [2]
             return decode_type_description(ber.decode_tlv(tlv.value))
     raise MmsProtocolError("GetVariableAccessAttributes-Response without typeDescription")
+
+
+def describe(mms_type: Optional[MmsType]) -> str:
+    """Short text of a type: ``integer32``, ``float32``, ``visible-string(<=255)``, ``array[3] of ...``."""
+    if mms_type is None:
+        return "?"
+    if isinstance(mms_type, PrimitiveType):
+        size = mms_type.size
+        if size is None:
+            return mms_type.kind
+        if mms_type.kind in ("integer", "unsigned", "float"):
+            return f"{mms_type.kind}{size}"
+        return f"{mms_type.kind}(<={-size})" if size < 0 else f"{mms_type.kind}({size})"
+    if isinstance(mms_type, StructureType):
+        return f"structure of {len(mms_type.components)}"
+    if isinstance(mms_type, ArrayType):
+        return f"array[{mms_type.count}] of {describe(mms_type.element)}"
+    return f"type {mms_type.name}"
 
 
 def label(value: IECData, mms_type: Optional[MmsType], prefix: str = "") -> list[tuple[str, IECData]]:
