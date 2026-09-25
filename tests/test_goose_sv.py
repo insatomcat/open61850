@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import random
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -12,8 +13,10 @@ from datetime import datetime, timezone
 import pytest
 from conftest import ROOT
 
-from open61850 import ethernet, goose, sv
+from open61850 import ber, ethernet, goose, sv
+from open61850.capture import CapturedFrame
 from open61850.data import BoolData, UIntData
+from open61850.supervision import BusSupervisor
 
 # A 9-2LE style frame without its Ethernet header: 8-byte SV header, savPdu
 # with 2 ASDUs (svID IED01_MU01_SV1, smpCnt 0x11B8 and 0x11B9, confRev 10000,
@@ -28,6 +31,7 @@ def test_library_imports_without_optional_dependencies() -> None:
         "sys.path.insert(0, 'src')\n"
         "import open61850.ber, open61850.data, open61850.ethernet, open61850.goose, open61850.sv\n"
         "import open61850.quality, open61850.scl, open61850.display, open61850.capture\n"
+        "import open61850.pcap, open61850.supervision\n"
         "import open61850.mms, open61850.mms.rcb, open61850.mms.types, open61850.mms.control\n"
         "bad = {'scapy', 'pcapy', 'fastapi', 'flask'} & set(sys.modules)\n"
         "assert not bad, bad\n"
@@ -152,3 +156,37 @@ def test_sv_long_sample_uses_the_long_length_form() -> None:
     assert decoded == asdu and sv.decode_int32_samples(decoded.sample) == values
     with pytest.raises(sv.SvDecodeError):
         sv.decode_sv_pdu(raw[:-3])
+
+
+# --- hostile input -------------------------------------------------------------
+
+
+def _mutants(frame: bytes, count: int, seed: int) -> list[bytes]:
+    """Reproducible corruptions: a few bytes overwritten, and one in five truncated."""
+    rng = random.Random(seed)
+    out = []
+    for _ in range(count):
+        raw = bytearray(frame)
+        for _ in range(rng.choice((1, 1, 2, 3))):
+            raw[rng.randrange(len(raw))] = rng.randrange(256)
+        if rng.random() < 0.2:
+            raw = raw[: rng.randrange(len(raw))]
+        out.append(bytes(raw))
+    return out
+
+
+def test_corrupted_frames_raise_only_ber_errors() -> None:
+    goose_frame = goose.encode_goose_frame(
+        _goose_pdu(), dst_mac="01:0c:cd:01:00:01", src_mac="02:00:00:00:00:01", app_id=1, vlan_id=10,
+    )
+    asdu = sv.SvAsdu("MU01", 12, 1, 2, sv.encode_int32_samples([(i, 0) for i in range(8)]), smp_rate=4000)
+    sv_frame = sv.encode_sv_frame(sv.SvPDU([asdu, asdu]), dst_mac="01:0c:cd:04:00:01", src_mac="02:00:00:00:00:02",
+                                  app_id=0x4000)
+    bus = BusSupervisor()
+    for frame, decode in ((goose_frame, goose.decode_goose_frame), (sv_frame, sv.decode_sv_frame)):
+        for raw in _mutants(frame, 3000, seed=61850):
+            try:
+                decode(raw)
+            except ber.BerError:
+                pass
+            bus.feed(CapturedFrame(0.0, raw, False))  # never raises

@@ -24,6 +24,8 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `sv.py` | `SvPDU` / `SvAsdu` with every 9-2 / 61869-9 field (datSet, refrTm, smpRate, smpMod, gmIdentity), PDU and frame codec, INT32+quality sample helpers. `_asdu_fields` has a fast path (22 us per 2-ASDU frame on a Xeon Gold server, 9 us on a recent Mac: `tools/bench_sv_decode.py`). |
 | `quality.py` | `Quality` (7-3, 13-bit bit string) and `TimeQuality` (UtcTime octet) in readable form. |
 | `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances, ReportControl blocks with their data sets and instance counts. |
+| `pcap.py` | pcap (micro and nanosecond, both byte orders) and pcapng (sections, `if_tsresol`, `if_tsoffset`, EPB direction flag, SPB, obsolete PB) read as `CapturedFrame`; Ethernet only. `PcapWriter`: classic pcap, nanoseconds. Checked against editcap 4.0.17 output (`tests/data/editcap_pcapng.json`), and tshark reads what the writer produces. |
+| `supervision.py` | `GooseSupervisor` / `SvSupervisor`: state only, fed with decoded messages and a time, return `Event`s (`EventKind`); `check(now)` for timeouts. `BusSupervisor` takes raw frames and counts malformed ones; `open61850-supervise` runs it on files or live. See below. |
 | `capture.py` | Linux capture without libpcap: `PacketCapture` reads an AF_PACKET TPACKET_V3 ring (mmap, one poll per block), classic BPF on ethertypes that works with or without a stripped tag, 802.1Q tag put back from the ring header, kernel timestamps, promiscuous membership, `PACKET_STATISTICS` drops. |
 | `mms/transport.py` | TPKT + COTP class 0: `IsoConnection` (CR/CC, segmentation on send, EOT reassembly on receive, DR = closed). |
 | `mms/association.py` | Association request built from `AssociationParameters` (Session CONNECT, Presentation CP-type, ACSE AARQ, MMS initiate-RequestPDU) and `decode_association_response` (ACCEPT/CPA/AARE/initiate-ResponsePDU to an `Association`; refusal at any layer raises `AssociationError`). The defaults give the 180 bytes PO replayed from a capture before the encoder existed; a test pins them. |
@@ -37,8 +39,9 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). |
 
 Public API: each module's `__all__` (the `mms` package re-exports the usual
-names). Only `mms` and `capture` do I/O; the library configures no logging
-and imports nothing outside the standard library (a test checks it).
+names). Only `mms`, `capture` and the SV `Publisher` do network I/O, and
+`pcap` reads and writes files; the library configures no logging and
+imports nothing outside the standard library (a test checks it).
 
 ## MMS on the wire
 
@@ -131,6 +134,26 @@ shifted the offsets of every later test (across `or` too) and let only the
 host's own SV streams through on a NIC that strips tags; `ethertype_filter`
 checks both positions instead. On `lo` every frame shows up twice
 (`PACKET_OUTGOING`): pass `outgoing=False`.
+
+## Supervision
+
+The ideas come from a private GOOSE/SV package of a protection project,
+shared by its maintainer, and are rewritten here. Its subscribers dropped
+every frame whose stNum was below the last one seen: a restarted IED was
+ignored until its stNum passed the old value. Here a counter behind the reference is a duplicate if
+it is among the last 16 accepted, late otherwise (and comes off the missed
+count); further behind, a restart that becomes the new reference.
+
+smpCnt wraps once per second. The wrap comes from `sample_rate`, from smpRate
+when smpMod = 1 (samples per second), or from the highest count seen before
+the first wrap. Distances are taken modulo the wrap: half a second or more
+ahead is a restart, because a loss count would mean nothing. With 2 ASDUs per
+frame, a duplicated frame gives two DUPLICATE events (one per ASDU).
+
+On a 10 s synthetic capture (24,000 frames, 4800 samples/s, 2 ASDUs), reading
+the file, decoding and supervising take 12 us per frame on a recent Mac.
+Checked live in Docker: `open61850-sv` on `lo` for 3 s, 7,208 frames, all
+supervised, none missed.
 
 ## Tests
 

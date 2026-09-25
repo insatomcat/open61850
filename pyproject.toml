@@ -37,6 +37,7 @@ Issues = "https://github.com/insatomcat/open61850/issues"
 [project.scripts]
 open61850-mms = "open61850.mms.__main__:main"
 open61850-sv = "open61850.sv_publisher:main"
+open61850-supervise = "open61850.supervision:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "open61850.__version__" }

@@ -13,12 +13,15 @@ Codecs, with no I/O:
 - :mod:`open61850.goose`: GOOSE PDUs and frames (IEC 61850-8-1).
 - :mod:`open61850.sv`: Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9).
 - :mod:`open61850.scl`: SCL files (IEDs, logical devices, data sets, report control blocks).
+- :mod:`open61850.supervision`: GOOSE and SV stream supervision (counters,
+  timeAllowedtoLive, configuration), fed with decoded messages.
 
 With I/O:
 
 - :mod:`open61850.mms`: MMS client over TCP (association, reads, writes,
   reports, report control blocks, controls).
 - :mod:`open61850.capture`: GOOSE and SV capture on Linux (AF_PACKET ring).
+- :mod:`open61850.pcap`: pcap and pcapng files, read and written.
 - :mod:`open61850.sv_publisher`: Sampled Values publication (streams, waveforms,
   faults); real-time sending with the ``open61850-rt`` engine (``open61850[rt]``).
 

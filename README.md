@@ -1,6 +1,6 @@
 # open61850
 
-IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), GOOSE and Sampled Values codecs, Sampled Values publication with a real-time engine, an SCL reader and a Linux capture for the process bus. The library is pure Python (standard library only, Python 3.10 or later); the optional real-time engine is in Rust.
+IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), GOOSE and Sampled Values codecs, supervision of GOOSE and SV streams, Sampled Values publication with a real-time engine, an SCL reader, pcap/pcapng files and a Linux capture for the process bus. The library is pure Python (standard library only, Python 3.10 or later); the optional real-time engine is in Rust.
 
 It was written for a test and diagnostic platform of a digital substation process bus, and checked there against real IEDs (a Schneider VMC7 and an ABB SSC600). The other open-source IEC 61850 stack, libiec61850, is GPL; open61850 is an alternative for projects that cannot take a GPL dependency.
 
@@ -23,15 +23,17 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.mms.control` | Controls: direct and select-before-operate, normal and enhanced security (waits for the CommandTermination, reports the LastApplError AddCause) |
 | `open61850.goose` | GOOSE PDUs and frames (IEC 61850-8-1) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
+| `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
 | `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
 | `open61850.quality` | Quality and TimeQuality in readable form |
 | `open61850.scl` | SCL files: IEDs, addresses, logical devices, report control blocks and data sets |
 | `open61850.capture` | GOOSE and SV capture on Linux from an AF_PACKET TPACKET_V3 ring, kernel timestamps, 802.1Q tags restored, no libpcap |
+| `open61850.pcap` | pcap and pcapng files (Wireshark, tcpdump), on any OS: reading, and writing classic pcap with nanosecond timestamps |
 | `open61850.ber` | ASN.1 BER primitives |
 
-Only `open61850.mms`, `open61850.capture` and the `Publisher` of `open61850.sv_publisher` do I/O. The public names of each module are those of its `__all__`.
+Only `open61850.mms`, `open61850.capture` and the `Publisher` of `open61850.sv_publisher` do network I/O; `open61850.pcap` reads and writes files. The public names of each module are those of its `__all__`.
 
 ## Examples
 
@@ -98,6 +100,22 @@ with PacketCapture("eth1") as cap:
             print(frame.timestamp, [(a.sv_id, a.smp_cnt) for a in pdu.asdus])
 ```
 
+Supervise the GOOSE and SV streams of a Wireshark capture, on any OS (the same code takes the frames of `PacketCapture` live):
+
+```python
+from open61850.pcap import read_pcap
+from open61850.supervision import BusSupervisor, EventKind, SvSupervisor
+
+bus = BusSupervisor(sv_supervisor=SvSupervisor(sample_rate=4800))
+for frame in read_pcap("bus.pcapng"):
+    for event in bus.feed(frame):
+        if event.kind is not EventKind.NEW_STREAM:
+            print(event)        # 1790000002.209167 MU01_SV1 gap: smpCnt 999 -> 1004
+print("\n".join(bus.summary()))
+```
+
+`GooseSupervisor` and `SvSupervisor` take decoded messages and a reception time, and keep only state: an application can feed them from its own receive loop.
+
 Publish Sampled Values, as a merging unit or a simulator would (Linux, root):
 
 ```python
@@ -139,9 +157,16 @@ sudo open61850-sv eth1 02:00:00:00:00:01 01:0c:cd:04:00:01 MU01_SV1 --appid 0x40
 
 `open61850-sv` publishes one SV stream until stopped (`--duration` to stop by itself, `--dump` to print one frame).
 
+```bash
+open61850-supervise capture.pcapng --events --sample-rate 4800
+sudo open61850-supervise --live eth1
+```
+
+`open61850-supervise` prints a line per stream (messages or samples, rate, missed, events), with `--events` every event of a file; with `--live` it prints events as they happen and the summary on Ctrl-C.
+
 ## Scope and limits
 
-- No MMS server; GOOSE is encoded and decoded, but publishing it (retransmission scheme) is up to the application.
+- No MMS server; GOOSE is encoded, decoded and supervised, but publishing it (retransmission scheme) is up to the application.
 - SV publication sends sinusoids and periodic faults; arbitrary sample sources (replay, live measurements) are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).

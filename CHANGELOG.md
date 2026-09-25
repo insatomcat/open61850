@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `open61850.pcap`: pcap and pcapng files read on any OS (as the
+  `CapturedFrame` of a live capture), classic pcap written with nanosecond
+  timestamps.
+- `open61850.supervision`: GOOSE and SV stream supervision. stNum/sqNum and
+  smpCnt followed (gaps, duplicates, late messages, restarts, wraps),
+  timeAllowedtoLive and SV timeouts, confRev/datSet/goID changes, simulation,
+  ndsCom, smpSynch. `BusSupervisor` takes raw frames.
+- `open61850-supervise`: supervision of a capture file or, on Linux, of an
+  interface.
+
 ## 0.3.0
 
 - `open61850-sv` (`python -m open61850.sv_publisher`): publishes one SV stream
