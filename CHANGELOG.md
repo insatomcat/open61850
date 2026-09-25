@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-09-25)
 
 - `open61850.pcap`: pcap and pcapng files read on any OS (as the
   `CapturedFrame` of a live capture), classic pcap written with nanosecond
