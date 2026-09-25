@@ -4,13 +4,26 @@ Sampled Values decoding, GOOSE encoding and decoding for real-time C programs, f
 
 The codecs accept the input open61850's Python codecs accept and write the octets they write (`tests/test_*_native.py` compare them), and are fuzzed (`native/fuzz`).
 
+## From a release
+
+Each GitHub release carries `libopen61850-VERSION-ARCH-linux-gnu.tar.gz` for x86_64 and aarch64, built on glibc 2.17: `include/`, `lib/` (static library, shared library `libopen61850.so.0.MINOR` while the version is 0.x), and two pkg-config files.
+
+```sh
+tar xzf libopen61850-0.6.0-x86_64-linux-gnu.tar.gz
+export PKG_CONFIG_PATH=$PWD/libopen61850-0.6.0-x86_64-linux-gnu/lib/pkgconfig
+cc prog.c $(pkg-config --cflags --libs open61850-static)   # static
+cc prog.c $(pkg-config --cflags --libs open61850)          # shared
+```
+
+`package-manylinux.sh OUTDIR` builds the same archive locally (Docker).
+
 ## Build and link
 
 ```sh
 cd native
 cargo build --release -p open61850-c
 # target/release/libopen61850.a (static) and libopen61850.so (shared)
-cc -I capi/include prog.c target/release/libopen61850.a -lpthread -ldl -lm
+cc -I capi/include prog.c target/release/libopen61850.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
 ```
 
 Rust is needed to build the library, not to use it: a C program links the `.a` and includes the header.
@@ -68,3 +81,5 @@ if (o61850_goose_encode_frame(&pdu, &to, out, sizeof out, &out_len) == O61850_OK
 ## Tests
 
 `tests/run.sh` checks that the header is the one cbindgen generates, then builds `tests/test_capi.c` (C11, ASan and UBSan) against the static library and runs it: frames written by the Python codecs, every return code, 200,000 random mutations through every decoder. It also compiles the header as C++.
+
+`tests/test_package.sh TARBALL` builds and runs the same program against a release archive, through both pkg-config files, and checks that the program needs the shared library by its soname.

@@ -75,6 +75,15 @@ jobs:
             cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$target" -- -max_total_time=60
           done
 
+  capi-package:
+    # libopen61850 packaged as a release packages it (manylinux2014, glibc
+    # 2.17), then used through pkg-config on the runner's newer system.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: native/capi/package-manylinux.sh dist
+      - run: native/capi/tests/test_package.sh dist/libopen61850-*.tar.gz
+
   native:
     runs-on: ubuntu-latest
     steps:

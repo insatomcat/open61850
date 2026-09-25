@@ -11,6 +11,8 @@
 - `libopen61850`, the C API of these codecs (`native/capi`, header
   `open61850.h`): no allocation, no state, return codes, decoded strings
   pointing into the caller's frame. Tested from C under ASan and UBSan.
+  Each release carries it for x86_64 and aarch64 Linux (glibc 2.17 and
+  later): header, static and shared libraries, pkg-config files.
 - `goose.encode_goose_pdu` writes allData for an empty data set (`ab 00`)
   instead of leaving it out: it is not OPTIONAL in IEC 61850-8-1.
 - `goose.decode_goose_pdu` refuses a timeAllowedtoLive, stNum, sqNum,

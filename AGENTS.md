@@ -235,7 +235,17 @@ caught as `O61850_ERR_INTERNAL`. allData values are `o61850_data` (kind +
 union) in preorder, read in place by the encoder. `tests/run.sh` builds
 `tests/test_capi.c` with ASan and UBSan: frames written by the Python
 codecs, every return code, 200,000 mutations through every decoder; it
-compiles the header as C++ too. `native/fuzz` (cargo-fuzz): `sv_decode`
+compiles the header as C++ too. `package.sh OUTDIR` writes
+`libopen61850-VERSION-ARCH-linux-gnu.tar.gz` (header, static library,
+shared library with soname `libopen61850.so.0.MINOR` from `build.rs`,
+`open61850.pc` and `open61850-static.pc`, whose Libs.private are what
+rustc reports as native-static-libs); `package-manylinux.sh` runs it in
+manylinux2014 (glibc 2.17) and `tests/test_package.sh` builds and runs
+`test_capi.c` from the archive through both pkg-config files. CI packages
+x86_64 and tests it on the runner; a tag attaches both architectures to a
+GitHub release, with the CHANGELOG section as notes. Checked locally: the
+aarch64 archive built on glibc 2.17 runs on Debian 13 (glibc 2.41).
+`native/fuzz` (cargo-fuzz): `sv_decode`
 and `goose_decode` (no panic, counts consistent), `goose_roundtrip` (a
 frame the encoder writes decodes to the same fields and values, floats by
 their bits); CI runs each for a minute. A first local minute each: 38.6 M,

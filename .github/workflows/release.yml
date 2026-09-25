@@ -3,7 +3,9 @@
 
 # Publishes open61850 and open61850-rt to PyPI on a version tag, through PyPI
 # trusted publishing (workflow release.yml, environment pypi, registered on
-# both projects): no token. Both carry the version of the tag.
+# both projects): no token. Both carry the version of the tag. Then creates
+# the GitHub release: the CHANGELOG section of the version as notes, and
+# libopen61850 (the C API) for x86_64 and aarch64, built on glibc 2.17.
 
 name: release
 
@@ -64,6 +66,20 @@ jobs:
           name: dist-native-sdist
           path: native/dist/
 
+  capi:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: native/capi/package-manylinux.sh dist
+      - run: native/capi/tests/test_package.sh dist/libopen61850-*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: capi-${{ matrix.runner }}
+          path: dist/
+
   publish:
     needs: [python, native, native-sdist]
     runs-on: ubuntu-latest
@@ -78,3 +94,24 @@ jobs:
           merge-multiple: true
       - run: ls -l dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: [publish, capi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: capi-*
+          path: capi/
+          merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '$0 ~ "^## " v "( |$)" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "no CHANGELOG.md section for $version"; exit 1; }
+      - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md capi/*.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
