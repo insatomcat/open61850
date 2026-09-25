@@ -170,6 +170,24 @@ samples/s): no priority, median 62 µs after the nominal time, p99 73 µs,
 max 0.9 ms; `SCHED_FIFO` 50, median 6 µs, p99 14 µs, max 46 µs. PO's C
 rt_sender at the same priority (1 stream): median 4 µs, p99 11 µs, max 38 µs.
 
+`native/` is a Cargo workspace: the engine at its root, `core/` beside it.
+`open61850-core` holds process bus codecs for real-time callers (a
+protection runtime in C is the target, through a C API still to come):
+`no_std`, no unsafe code, no allocation, decoding borrows from the input.
+Each module mirrors the Python module of the same name and accepts exactly
+what it accepts: `ber` (tags as the int of their identifier octets, lenient
+unsigned), `ethernet` (`parse_header` starts after the EtherType,
+`parse_frame` at the MAC), `time` (UtcTime), `sv` (`decode_pdu` checks every
+ASDU and noASDU, then `asdus()` walks them again; `decode_payload` and
+`decode_frame`; `int32_samples`). The engine exposes `decode_sv_pdu` and
+`decode_sv_frame` to Python, and `tests/test_sv_decode_native.py` compares
+them with `open61850.sv` on random PDUs and frames, BER forms the encoder
+never writes (long and non-minimal lengths, high tags, unknown, repeated
+and shuffled fields) and byte mutations of each: same refusals, same
+fields. The 2-ASDU frame of `tools/bench_sv_decode.py`, decoded with its
+samples read, costs 110 ns (`cargo run --release -p open61850-core
+--example bench_sv_decode`, Docker on the dev Mac).
+
 Building locally without Rust installed: Docker (`rust:1-slim-bookworm`
 plus `maturin`), or `quay.io/pypa/manylinux2014_x86_64` for an x86_64 wheel.
 

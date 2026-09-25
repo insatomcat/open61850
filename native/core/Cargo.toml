@@ -1,0 +1,14 @@
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "open61850-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "IEC 61850 process bus codecs of open61850: no allocation, no I/O"
+repository.workspace = true
+publish = false
+
+[lib]
+name = "open61850_core"

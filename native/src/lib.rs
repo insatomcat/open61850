@@ -17,6 +17,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use open61850_core::sv;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -471,9 +472,59 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
     unsafe { libc::close(fd) };
 }
 
+// --- SV decoding (open61850-core), exposed to compare it with open61850.sv ---
+
+type DecodedPdu<'py> = (Option<Bound<'py, PyBytes>>, Vec<Bound<'py, PyDict>>);
+
+fn pdu_to_py<'py>(py: Python<'py>, pdu: &sv::SvPdu<'_>) -> PyResult<DecodedPdu<'py>> {
+    let bytes = |b: &[u8]| PyBytes::new(py, b);
+    let mut asdus = Vec::with_capacity(pdu.len());
+    for a in pdu.asdus() {
+        let d = PyDict::new(py);
+        d.set_item("sv_id", bytes(a.sv_id))?;
+        d.set_item("dat_set", a.dat_set.map(bytes))?;
+        d.set_item("smp_cnt", a.smp_cnt)?;
+        d.set_item("conf_rev", a.conf_rev)?;
+        d.set_item("refr_tm", a.refr_tm.map(|t| (t.seconds, t.fraction, t.quality)))?;
+        d.set_item("smp_synch", a.smp_synch)?;
+        d.set_item("smp_rate", a.smp_rate)?;
+        d.set_item("sample", bytes(a.sample))?;
+        d.set_item("smp_mod", a.smp_mod)?;
+        d.set_item("gm_identity", a.gm_identity.map(bytes))?;
+        asdus.push(d);
+    }
+    Ok((pdu.security.map(bytes), asdus))
+}
+
+/// `(security, [asdu dicts])` of a SavPdu; ValueError when it is invalid (for tests).
+#[pyfunction]
+fn decode_sv_pdu<'py>(py: Python<'py>, apdu: &[u8]) -> PyResult<DecodedPdu<'py>> {
+    let pdu = sv::decode_pdu(apdu).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    pdu_to_py(py, &pdu)
+}
+
+/// `None` for a frame that is not SV, else `(frame dict, security, [asdu dicts])` (for tests).
+#[pyfunction]
+fn decode_sv_frame<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Option<(Bound<'py, PyDict>, DecodedPdu<'py>)>> {
+    let Some((frame, pdu)) = sv::decode_frame(raw).map_err(|e| PyValueError::new_err(e.to_string()))? else {
+        return Ok(None);
+    };
+    let d = PyDict::new(py);
+    d.set_item("dst_mac", PyBytes::new(py, &frame.dst_mac))?;
+    d.set_item("src_mac", PyBytes::new(py, &frame.src_mac))?;
+    d.set_item("vlan_id", frame.vlan_id)?;
+    d.set_item("vlan_priority", frame.vlan_priority)?;
+    d.set_item("app_id", frame.header.app_id)?;
+    d.set_item("reserved1", frame.header.reserved1)?;
+    d.set_item("reserved2", frame.header.reserved2)?;
+    Ok(Some((d, pdu_to_py(py, &pdu)?)))
+}
+
 #[pymodule]
 fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
+    m.add_function(wrap_pyfunction!(decode_sv_pdu, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_sv_frame, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

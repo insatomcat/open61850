@@ -1,13 +1,22 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-[package]
-name = "open61850-rt"
+[workspace]
+members = ["core"]
+
+[workspace.package]
 version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Real-time Sampled Values engine of open61850"
 repository = "https://github.com/insatomcat/open61850"
+
+[package]
+name = "open61850-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real-time Sampled Values engine of open61850"
+repository.workspace = true
 publish = false
 
 [lib]
@@ -16,6 +25,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libc = "0.2"
+open61850-core = { path = "core" }
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]

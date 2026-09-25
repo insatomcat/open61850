@@ -4,4 +4,6 @@ The real-time Sampled Values engine of [open61850](https://github.com/insatomcat
 
 It sends the frames open61850 prepares (one template per stream, with the positions of smpCnt and of the samples), computing the samples from the waveform parameters, on absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for every stream, with optional `SCHED_FIFO` priority and CPU pinning. Linux only.
 
+The `core/` crate of this workspace, `open61850-core`, holds the process bus codecs (Sampled Values decoding so far) for real-time callers: `no_std`, no allocation, no unsafe code, and the same accepted input as the Python codecs of open61850.
+
 Apache License 2.0.
