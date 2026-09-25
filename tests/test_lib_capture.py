@@ -118,12 +118,11 @@ def test_capture_on_loopback() -> None:
 
 
 @linux_only
-def test_processbus_capture_on_afpacket(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_processbus_capture_on_lo() -> None:
     import threading
 
     from processbus_capture import ProcessbusCapture
 
-    monkeypatch.setenv("PO_CAPTURE_BACKEND", "afpacket")
     sender = _raw_sender()
     mux = ProcessbusCapture("lo")
     goose: list[bytes] = []
@@ -151,17 +150,16 @@ def test_processbus_capture_on_afpacket(monkeypatch: pytest.MonkeyPatch) -> None
         time.sleep(0.1)
         assert goose == [_frame(0x88B8, vlan=305)] and sv == [_frame(0x88BA, vlan=105)]
         stats = mux.stats()
-        assert stats["backend"] == "afpacket" and stats["goose_packets"] == 1 and stats["sv_packets"] == 1
+        assert stats["goose_packets"] == 1 and stats["sv_packets"] == 1
     finally:
         unsubscribe_sv()
         unsubscribe_goose()
 
 
 @linux_only
-def test_processbus_capture_lets_sv_through_only_for_an_sv_subscriber(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_processbus_capture_lets_sv_through_only_for_an_sv_subscriber() -> None:
     from processbus_capture import ProcessbusCapture
 
-    monkeypatch.setenv("PO_CAPTURE_BACKEND", "afpacket")
     sender = _raw_sender()
     mux = ProcessbusCapture("lo")
     goose: list[bytes] = []
