@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Ethernet II / IEEE 802.1Q framing shared by GOOSE and Sampled Values, as
-//! `open61850.ethernet.parse_frame` reads it.
+//! `open61850.ethernet` reads and builds it.
 //!
 //! After the MAC addresses and the optional VLAN tag:
 //! `EtherType (2) | APPID (2) | Length (2) | Reserved 1 (2) | Reserved 2 (2) | APDU`.
 //! `Length` counts from APPID to the end of the APDU; trailing Ethernet
 //! padding is ignored.
+
+use crate::ber::{BufferFull, Writer};
 
 pub const ETHERTYPE_VLAN: u16 = 0x8100;
 pub const ETHERTYPE_GOOSE: u16 = 0x88B8;
@@ -90,6 +92,66 @@ pub fn parse_frame<'a>(raw: &'a [u8], ethertypes: &[u16]) -> Option<Frame<'a>> {
         ethertype,
         header: parse_header(&raw[offset..])?,
     })
+}
+
+// --- writing ------------------------------------------------------------------
+
+/// The 802.1Q tag of a frame to send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vlan {
+    pub id: u16,
+    pub priority: u8,
+}
+
+/// Where a GOOSE or SV frame goes, as `open61850.ethernet.build_frame` takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Address {
+    pub dst_mac: [u8; 6],
+    pub src_mac: [u8; 6],
+    pub app_id: u16,
+    pub vlan: Option<Vlan>,
+}
+
+/// A frame `build_frame` refuses to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    ApduTooLong(usize),
+    VlanId(u16),
+    VlanPriority(u8),
+}
+
+impl Address {
+    /// Octets from the destination MAC to the APDU.
+    pub fn header_len(&self) -> usize {
+        12 + if self.vlan.is_some() { 4 } else { 0 } + 2 + HEADER_LEN
+    }
+
+    /// Check what `write_header` would write for an APDU of `apdu_len` octets.
+    pub fn check(&self, apdu_len: usize) -> Result<(), FrameError> {
+        if HEADER_LEN + apdu_len > 0xFFFF {
+            return Err(FrameError::ApduTooLong(apdu_len));
+        }
+        match self.vlan {
+            Some(v) if v.id > 0x0FFF => Err(FrameError::VlanId(v.id)),
+            Some(v) if v.priority > 7 => Err(FrameError::VlanPriority(v.priority)),
+            _ => Ok(()),
+        }
+    }
+
+    /// MACs, tag, EtherType and APPID header (reserved fields zero); the APDU
+    /// follows. Call [`Address::check`] first: the values are written as they are.
+    pub fn write_header(&self, w: &mut Writer<'_>, ethertype: u16, apdu_len: usize) -> Result<(), BufferFull> {
+        w.put(&self.dst_mac)?;
+        w.put(&self.src_mac)?;
+        if let Some(v) = self.vlan {
+            w.put(&ETHERTYPE_VLAN.to_be_bytes())?;
+            w.put(&((u16::from(v.priority) << 13) | v.id).to_be_bytes())?;
+        }
+        w.put(&ethertype.to_be_bytes())?;
+        w.put(&self.app_id.to_be_bytes())?;
+        w.put(&((HEADER_LEN + apdu_len) as u16).to_be_bytes())?;
+        w.put(&[0; 4])
+    }
 }
 
 #[cfg(test)]

@@ -17,7 +17,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use open61850_core::data::Data;
+use open61850_core::ethernet::{Address, Vlan};
+use open61850_core::goose::{self, GoosePdu};
 use open61850_core::sv;
+use open61850_core::time::UtcTime;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -520,11 +524,160 @@ fn decode_sv_frame<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Option<(Bound<'
     Ok(Some((d, pdu_to_py(py, &pdu)?)))
 }
 
+// --- GOOSE encoding (open61850-core), exposed to compare it with open61850.goose ---
+
+/// A `Data` value with its octets owned, in preorder.
+enum Owned {
+    Leaf(OwnedLeaf),
+    Structure(usize),
+    Array(usize),
+}
+
+enum OwnedLeaf {
+    Boolean(bool),
+    Integer(i64),
+    Unsigned(u64),
+    Float32(f32),
+    Float64(f64),
+    BitString(Vec<u8>, u8),
+    OctetString(Vec<u8>),
+    VisibleString(Vec<u8>),
+    MmsString(Vec<u8>),
+    UtcTime(UtcTime),
+    Raw(u32, Vec<u8>),
+}
+
+fn utc_time(value: &Bound<'_, PyAny>, quality: &Bound<'_, PyAny>) -> PyResult<UtcTime> {
+    let py = value.py();
+    let raw = py.import("open61850.data")?.getattr("encode_utc_time")?.call1((value, quality))?;
+    UtcTime::decode(&raw.extract::<Vec<u8>>()?).ok_or_else(|| PyValueError::new_err("bad utc-time"))
+}
+
+/// Flatten an `open61850.data` value (and its members) into `out`.
+fn flatten(obj: &Bound<'_, PyAny>, out: &mut Vec<Owned>) -> PyResult<()> {
+    let kind = obj.get_type().name()?.to_string();
+    let attr = |name: &str| obj.getattr(name);
+    let leaf = match kind.as_str() {
+        "BoolData" => OwnedLeaf::Boolean(attr("value")?.extract()?),
+        "IntData" => OwnedLeaf::Integer(attr("value")?.extract()?),
+        "UIntData" => OwnedLeaf::Unsigned(attr("value")?.extract()?),
+        "FloatData" if attr("double")?.extract()? => OwnedLeaf::Float64(attr("value")?.extract()?),
+        "FloatData" => OwnedLeaf::Float32(attr("value")?.extract::<f64>()? as f32),
+        "BitStringData" => OwnedLeaf::BitString(attr("value")?.extract()?, attr("unused_bits")?.extract()?),
+        "OctetStringData" => OwnedLeaf::OctetString(attr("value")?.extract()?),
+        // str.encode("ascii", errors="replace"): one "?" per other character.
+        "VisibleStringData" => OwnedLeaf::VisibleString(
+            attr("value")?.extract::<String>()?.chars().map(|c| if c.is_ascii() { c as u8 } else { b'?' }).collect(),
+        ),
+        "MmsStringData" => OwnedLeaf::MmsString(attr("value")?.extract::<String>()?.into_bytes()),
+        "TimestampData" => OwnedLeaf::UtcTime(utc_time(&attr("value")?, &attr("quality")?)?),
+        "RawData" => OwnedLeaf::Raw(attr("tag")?.extract()?, attr("value")?.extract()?),
+        "StructureData" | "ArrayData" => {
+            let members: Vec<Bound<'_, PyAny>> =
+                attr(if kind == "StructureData" { "members" } else { "elements" })?.extract()?;
+            out.push(if kind == "StructureData" { Owned::Structure(members.len()) } else { Owned::Array(members.len()) });
+            for m in &members {
+                flatten(m, out)?;
+            }
+            return Ok(());
+        }
+        _ => return Err(PyValueError::new_err(format!("not an IEC 61850 Data value: {kind}"))),
+    };
+    out.push(Owned::Leaf(leaf));
+    Ok(())
+}
+
+fn borrow(owned: &Owned) -> Data<'_> {
+    match owned {
+        Owned::Structure(n) => Data::Structure(*n),
+        Owned::Array(n) => Data::Array(*n),
+        Owned::Leaf(leaf) => match leaf {
+            OwnedLeaf::Boolean(v) => Data::Boolean(*v),
+            OwnedLeaf::Integer(v) => Data::Integer(*v),
+            OwnedLeaf::Unsigned(v) => Data::Unsigned(*v),
+            OwnedLeaf::Float32(v) => Data::Float32(*v),
+            OwnedLeaf::Float64(v) => Data::Float64(*v),
+            OwnedLeaf::BitString(bits, unused) => Data::BitString { bits, unused: *unused },
+            OwnedLeaf::OctetString(s) => Data::OctetString(s),
+            OwnedLeaf::VisibleString(s) => Data::VisibleString(s),
+            OwnedLeaf::MmsString(s) => Data::MmsString(s),
+            OwnedLeaf::UtcTime(t) => Data::UtcTime(*t),
+            OwnedLeaf::Raw(tag, value) => Data::Raw { tag: *tag, value },
+        },
+    }
+}
+
+/// Encode an `open61850.goose.GoosePDU` (`address` = None for the PDU alone).
+fn encode_goose(pdu: &Bound<'_, PyAny>, address: Option<Address>) -> PyResult<Vec<u8>> {
+    let ascii = |name: &str| -> PyResult<Vec<u8>> {
+        let s: String = pdu.getattr(name)?.extract()?;
+        if !s.is_ascii() {
+            return Err(PyValueError::new_err(format!("{name} is not ASCII")));
+        }
+        Ok(s.into_bytes())
+    };
+    let go_id = if pdu.getattr("go_id")?.is_none() { None } else { Some(ascii("go_id")?) };
+    let (gocb_ref, dat_set) = (ascii("gocb_ref")?, ascii("dat_set")?);
+    let mut owned = Vec::new();
+    for item in pdu.getattr("all_data")?.try_iter()? {
+        flatten(&item?, &mut owned)?;
+    }
+    let all_data: Vec<Data<'_>> = owned.iter().map(borrow).collect();
+    let message = GoosePdu {
+        gocb_ref: &gocb_ref,
+        time_allowed_to_live: pdu.getattr("time_allowed_to_live")?.extract()?,
+        dat_set: &dat_set,
+        go_id: go_id.as_deref(),
+        t: utc_time(&pdu.getattr("timestamp")?, &pdu.getattr("time_quality")?)?,
+        st_num: pdu.getattr("st_num")?.extract()?,
+        sq_num: pdu.getattr("sq_num")?.extract()?,
+        simulation: pdu.getattr("simulation")?.extract()?,
+        conf_rev: pdu.getattr("conf_rev")?.extract()?,
+        nds_com: pdu.getattr("nds_com")?.extract()?,
+        num_dat_set_entries: pdu.getattr("num_dat_set_entries")?.extract()?,
+        all_data: &all_data,
+    };
+    let err = |e: goose::EncodeError| PyValueError::new_err(e.to_string());
+    let len = goose::pdu_len(&message).map_err(err)? + address.map_or(0, |a| a.header_len());
+    let mut out = vec![0u8; len];
+    let n = match address {
+        Some(a) => goose::encode_frame(&message, &a, &mut out),
+        None => goose::encode_pdu(&message, &mut out),
+    }
+    .map_err(err)?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// The IECGoosePdu of an `open61850.goose.GoosePDU` (for tests).
+#[pyfunction]
+fn encode_goose_pdu<'py>(py: Python<'py>, pdu: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+    Ok(PyBytes::new(py, &encode_goose(pdu, None)?))
+}
+
+/// The Ethernet frame of an `open61850.goose.GoosePDU` (for tests).
+#[pyfunction]
+#[pyo3(signature = (pdu, dst_mac, src_mac, app_id, vlan_id=None, vlan_priority=None))]
+fn encode_goose_frame<'py>(
+    py: Python<'py>,
+    pdu: &Bound<'py, PyAny>,
+    dst_mac: [u8; 6],
+    src_mac: [u8; 6],
+    app_id: u16,
+    vlan_id: Option<u16>,
+    vlan_priority: Option<u8>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let vlan = vlan_id.map(|id| Vlan { id, priority: vlan_priority.unwrap_or(0) });
+    Ok(PyBytes::new(py, &encode_goose(pdu, Some(Address { dst_mac, src_mac, app_id, vlan }))?))
+}
+
 #[pymodule]
 fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_function(wrap_pyfunction!(decode_sv_pdu, m)?)?;
     m.add_function(wrap_pyfunction!(decode_sv_frame, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_goose_pdu, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_goose_frame, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

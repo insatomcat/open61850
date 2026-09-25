@@ -174,19 +174,32 @@ rt_sender at the same priority (1 stream): median 4 µs, p99 11 µs, max 38 µs.
 `open61850-core` holds process bus codecs for real-time callers (a
 protection runtime in C is the target, through a C API still to come):
 `no_std`, no unsafe code, no allocation, decoding borrows from the input.
-Each module mirrors the Python module of the same name and accepts exactly
-what it accepts: `ber` (tags as the int of their identifier octets, lenient
-unsigned), `ethernet` (`parse_header` starts after the EtherType,
-`parse_frame` at the MAC), `time` (UtcTime), `sv` (`decode_pdu` checks every
-ASDU and noASDU, then `asdus()` walks them again; `decode_payload` and
-`decode_frame`; `int32_samples`). The engine exposes `decode_sv_pdu` and
-`decode_sv_frame` to Python, and `tests/test_sv_decode_native.py` compares
-them with `open61850.sv` on random PDUs and frames, BER forms the encoder
-never writes (long and non-minimal lengths, high tags, unknown, repeated
-and shuffled fields) and byte mutations of each: same refusals, same
-fields. The 2-ASDU frame of `tools/bench_sv_decode.py`, decoded with its
-samples read, costs 110 ns (`cargo run --release -p open61850-core
---example bench_sv_decode`, Docker on the dev Mac).
+Each module mirrors the Python module of the same name: it accepts exactly
+what the Python decoder accepts and writes the octets the Python encoder
+writes. `ber` (tags as the int of their identifier octets, lenient
+unsigned; `Writer` into a caller's buffer, minimal lengths and INTEGERs),
+`ethernet` (`parse_header` starts after the EtherType, `parse_frame` at the
+MAC; `Address` writes the header), `time` (UtcTime), `sv` (`decode_pdu`
+checks every ASDU and noASDU, then `asdus()` walks them again;
+`decode_payload` and `decode_frame`; `int32_samples`), `data` (MMS `Data`
+as a flat preorder sequence: `Structure(n)` and `Array(n)` are followed by
+their members, nesting at most 32 deep; `sequence_len` then
+`write_sequence`), `goose` (`encode_pdu`, `encode_frame`: lengths measured
+first, then written once into the buffer; `BufferTooSmall` says how many
+octets are needed; stNum, sqNum, t and retransmission stay with the
+caller). The engine exposes `decode_sv_pdu`, `decode_sv_frame`,
+`encode_goose_pdu` and `encode_goose_frame` to Python for the tests.
+`tests/test_sv_decode_native.py` compares the SV decoder with
+`open61850.sv` on random PDUs and frames, BER forms the encoder never
+writes (long and non-minimal lengths, high tags, unknown, repeated and
+shuffled fields) and byte mutations of each: same refusals, same fields.
+`tests/test_goose_encode_native.py` compares the GOOSE encoder with
+`open61850.goose` on random messages (every Data type, nesting, INTEGER
+and length boundaries, non-ASCII VisibleStrings): same octets, same
+refusals. Docker on the dev Mac (`cargo run --release -p open61850-core
+--example ...`): the 2-ASDU frame of `tools/bench_sv_decode.py` decodes,
+samples read, in 110 ns (`bench_sv_decode`); a 168-byte trip GOOSE of 10
+entries encodes in 128 ns (`bench_goose_encode`).
 
 Building locally without Rust installed: Docker (`rust:1-slim-bookworm`
 plus `maturin`), or `quay.io/pypa/manylinux2014_x86_64` for an x86_64 wheel.

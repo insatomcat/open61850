@@ -1,11 +1,13 @@
 // Copyright 2026 Florent Carli
 // SPDX-License-Identifier: Apache-2.0
 
-//! X.690 BER reading, as `open61850.ber` does it.
+//! X.690 BER, as `open61850.ber` reads and writes it.
 //!
 //! A tag is the integer of its identifier octets (`0x83`, `0xBF48`); tags of
-//! more than four octets read as `u32::MAX`. Lengths are definite, short or
-//! long form (non-minimal long forms accepted).
+//! more than four octets read as `u32::MAX`. Lengths are definite: read in
+//! short or long form (non-minimal long forms accepted), written in the
+//! minimal form. INTEGERs are written minimal, unsigned ones with a leading
+//! `00` when the high bit is set.
 
 use core::fmt;
 
@@ -141,6 +143,110 @@ pub fn decode_unsigned(content: &[u8]) -> Result<u64, BerError> {
     Ok(significant.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b)))
 }
 
+// --- writing ------------------------------------------------------------------
+
+/// The output buffer is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferFull;
+
+/// Octets of a tag written as the integer of its identifier octets.
+pub fn tag_len(tag: u32) -> usize {
+    (4 - tag.leading_zeros() as usize / 8).max(1)
+}
+
+/// Octets of a definite length in its minimal form.
+pub fn length_len(length: usize) -> usize {
+    if length < 0x80 {
+        1
+    } else {
+        1 + (usize::BITS - length.leading_zeros()).div_ceil(8) as usize
+    }
+}
+
+/// Octets of a whole TLV with `content_len` content octets.
+pub fn tlv_len(tag: u32, content_len: usize) -> usize {
+    tag_len(tag) + length_len(content_len) + content_len
+}
+
+/// Content octets of an INTEGER or an unsigned INTEGER, kept on the stack.
+#[derive(Debug, Clone, Copy)]
+pub struct Integer {
+    octets: [u8; 9],
+    start: usize,
+}
+
+impl Integer {
+    /// Minimal two's-complement form.
+    pub fn signed(value: i64) -> Integer {
+        let magnitude = if value < 0 { !value } else { value } as u64;
+        let n = (64 - magnitude.leading_zeros() as usize) / 8 + 1;
+        let mut octets = [0u8; 9];
+        octets[1..].copy_from_slice(&value.to_be_bytes());
+        Integer { octets, start: 9 - n }
+    }
+
+    /// Minimal form of a non-negative value (a leading `00` keeps it positive).
+    pub fn unsigned(value: u64) -> Integer {
+        let n = (64 - value.leading_zeros() as usize) / 8 + 1;
+        let mut octets = [0u8; 9];
+        octets[1..].copy_from_slice(&value.to_be_bytes());
+        Integer { octets, start: 9 - n }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.octets[self.start..]
+    }
+}
+
+/// Writes TLVs forward into a caller's buffer.
+#[derive(Debug)]
+pub struct Writer<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> Writer<'a> {
+    pub fn new(buf: &'a mut [u8]) -> Writer<'a> {
+        Writer { buf, pos: 0 }
+    }
+
+    /// Octets written so far.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    pub fn put(&mut self, octets: &[u8]) -> Result<(), BufferFull> {
+        let end = self.pos + octets.len();
+        self.buf.get_mut(self.pos..end).ok_or(BufferFull)?.copy_from_slice(octets);
+        self.pos = end;
+        Ok(())
+    }
+
+    pub fn put_tag(&mut self, tag: u32) -> Result<(), BufferFull> {
+        self.put(&tag.to_be_bytes()[4 - tag_len(tag)..])
+    }
+
+    pub fn put_length(&mut self, length: usize) -> Result<(), BufferFull> {
+        if length < 0x80 {
+            return self.put(&[length as u8]);
+        }
+        let n = length_len(length) - 1;
+        self.put(&[0x80 | n as u8])?;
+        self.put(&length.to_be_bytes()[size_of::<usize>() - n..])
+    }
+
+    /// Tag and length of a TLV whose content follows.
+    pub fn put_header(&mut self, tag: u32, content_len: usize) -> Result<(), BufferFull> {
+        self.put_tag(tag)?;
+        self.put_length(content_len)
+    }
+
+    pub fn put_tlv(&mut self, tag: u32, content: &[u8]) -> Result<(), BufferFull> {
+        self.put_header(tag, content.len())?;
+        self.put(content)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +270,35 @@ mod tests {
         assert_eq!(decode_tlv(&[0x80, 0x02, 0x00], 0), Err(BerError::Truncated { tag: 0x80, needed: 2, left: 1 }));
         let huge = [0x80, 0x89, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
         assert!(matches!(decode_tlv(&huge, 0), Err(BerError::Truncated { .. })));
+    }
+
+    #[test]
+    fn integers() {
+        let cases: [(i64, &[u8]); 7] = [
+            (0, &[0x00]),
+            (127, &[0x7F]),
+            (128, &[0x00, 0x80]),
+            (-1, &[0xFF]),
+            (-128, &[0x80]),
+            (-129, &[0xFF, 0x7F]),
+            (i64::MIN, &[0x80, 0, 0, 0, 0, 0, 0, 0]),
+        ];
+        for (value, octets) in cases {
+            assert_eq!(Integer::signed(value).as_slice(), octets, "{value}");
+        }
+        assert_eq!(Integer::unsigned(0x80).as_slice(), &[0x00, 0x80]);
+        assert_eq!(Integer::unsigned(u64::MAX).as_slice(), &[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn writer() {
+        let mut buf = [0u8; 8];
+        let mut w = Writer::new(&mut buf);
+        w.put_header(0xBF48, 0x100).unwrap();
+        assert_eq!(w.position(), 5);
+        assert_eq!(w.put(&[0; 4]), Err(BufferFull));
+        assert_eq!(&buf[..5], &[0xBF, 0x48, 0x82, 0x01, 0x00]);
+        assert_eq!((tag_len(0), length_len(0x7F), length_len(0x80), tlv_len(0x80, 0x100)), (1, 1, 2, 0x104));
     }
 
     #[test]
