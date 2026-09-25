@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from open61850.sv import SvAsdu, SvPDU, decode_sv_frame, encode_sv_frame  # noqa: E402
+from open61850.sv import SvAsdu, SvPDU, decode_sv_frame, encode_sv_frame
 
 
 def main() -> int:

@@ -16,7 +16,16 @@ import json
 from conftest import DATA_DIR
 
 from open61850 import ber
-from open61850.data import BitStringData, BoolData, IntData, OctetStringData, StructureData, TimestampData, UIntData, decode_data_sequence
+from open61850.data import (
+    BitStringData,
+    BoolData,
+    IntData,
+    OctetStringData,
+    StructureData,
+    TimestampData,
+    UIntData,
+    decode_data_sequence,
+)
 from open61850.mms import InformationReport, ObjectName, OptFlds, ReasonCode, decode_report, is_report, pdu
 
 CAPTURE = json.loads((DATA_DIR / "iedscout_reports_control.json").read_text())

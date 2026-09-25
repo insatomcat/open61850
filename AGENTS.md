@@ -188,7 +188,9 @@ supervised, none missed.
 
 ## Tests
 
-`python -m pytest`. Golden bytes come from IED captures (IEDscout), round
+`python -m pytest`. `ruff check src tests tools` and `mypy` (configured in
+`pyproject.toml`, versions pinned in CI) must pass: typed accessors over
+`# type: ignore`, and `Optional[...]` as the code writes it. Golden bytes come from IED captures (IEDscout), round
 trips, and a fake IED on a socketpair for the client. The AF_PACKET tests
 need Linux and root (`sudo python -m pytest tests/test_capture.py`; CI does
 it). Golden bytes changing means the wire format changed: check it against

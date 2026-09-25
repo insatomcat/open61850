@@ -13,13 +13,15 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TypeVar
 
 from ..data import BoolData, IECData, IntData, OctetStringData, UIntData, VisibleStringData
 from .client import MmsClient
 from .errors import DataAccessError, MmsError
 from .pdu import ObjectName
 from .report import OptFlds, TrgOps
+
+_D = TypeVar("_D")
 
 __all__ = [
     "RcbError",
@@ -158,23 +160,23 @@ def read_status(client: MmsClient, rcb: ObjectName) -> RcbStatus:
     attrs = list(_STATUS_ATTRIBUTES) + (["ResvTms"] if is_buffered(rcb) else ["Resv"])
     values = dict(zip(attrs, client.read_many([_attr(rcb, a) for a in attrs])))
 
-    def get(name: str, kind: type) -> Optional[IECData]:
+    def get(name: str, kind: type[_D]) -> Optional[_D]:
         value = values.get(name)
         return value if isinstance(value, kind) else None
 
     status = RcbStatus(rcb)
-    if (v := get("RptEna", BoolData)) is not None:
-        status.rpt_ena = v.value  # type: ignore[union-attr]
-    if (v := get("Resv", BoolData)) is not None:
-        status.resv = v.value  # type: ignore[union-attr]
-    if (v := get("ResvTms", (IntData, UIntData))) is not None:  # type: ignore[arg-type]
-        status.resv_tms = v.value  # type: ignore[union-attr]
-    if (v := get("Owner", OctetStringData)) is not None:
-        status.owner = v.value  # type: ignore[union-attr]
-    if (v := get("RptID", VisibleStringData)) is not None:
-        status.rpt_id = v.value  # type: ignore[union-attr]
-    if (v := get("DatSet", VisibleStringData)) is not None:
-        status.dat_set = v.value  # type: ignore[union-attr]
+    if (ena := get("RptEna", BoolData)) is not None:
+        status.rpt_ena = ena.value
+    if (resv := get("Resv", BoolData)) is not None:
+        status.resv = resv.value
+    if (tms := get("ResvTms", IntData) or get("ResvTms", UIntData)) is not None:
+        status.resv_tms = tms.value
+    if (owner := get("Owner", OctetStringData)) is not None:
+        status.owner = owner.value
+    if (rpt_id := get("RptID", VisibleStringData)) is not None:
+        status.rpt_id = rpt_id.value
+    if (dat_set := get("DatSet", VisibleStringData)) is not None:
+        status.dat_set = dat_set.value
     return status
 
 

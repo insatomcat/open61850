@@ -36,7 +36,7 @@ import mmap
 import select
 import socket
 import struct
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Union
 
 from .ethernet import ETHERTYPE_GOOSE, ETHERTYPE_SV, ETHERTYPE_VLAN
 
@@ -137,7 +137,7 @@ def _with_tag(data: bytes, status: int, tci: int, tpid: int) -> bytes:
     return data[:12] + struct.pack("!HH", tpid, tci) + data[12:]
 
 
-def read_block(ring: bytes, offset: int, outgoing: bool = True) -> list[CapturedFrame]:
+def read_block(ring: Union[bytes, mmap.mmap], offset: int, outgoing: bool = True) -> list[CapturedFrame]:
     """The frames of one TPACKET_V3 block at ``offset`` in the ring."""
     frames: list[CapturedFrame] = []
     _version, _priv, _status, count, first = _BLOCK.unpack_from(ring, offset)
@@ -190,7 +190,9 @@ class PacketCapture:
                 max(1, min(self._timeout_ms, 10)) if self._timeout_ms > 0 else 10, 0, 0,
             )
             self._sock.setsockopt(SOL_PACKET, PACKET_RX_RING, req)
-            self._ring = mmap.mmap(self._sock.fileno(), _BLOCK_SIZE * self._blocks, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+            self._ring = mmap.mmap(
+                self._sock.fileno(), _BLOCK_SIZE * self._blocks, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE,
+            )
             if promiscuous:
                 mreq = struct.pack("iHH8s", socket.if_nametoindex(iface), PACKET_MR_PROMISC, 0, b"")
                 self._sock.setsockopt(SOL_PACKET, PACKET_ADD_MEMBERSHIP, mreq)

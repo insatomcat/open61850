@@ -11,7 +11,6 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from typing import Optional
 
 import pytest
 from conftest import DATA_DIR
@@ -218,7 +217,7 @@ class FakeServer:
                 self.handler(ber.decode_unsigned(invoke.value), ber.tag_number(service.tag), service.value, self)
         except OSError:
             pass
-        except BaseException as exc:  # noqa: BLE001 - reported by the fixture
+        except BaseException as exc:
             self.errors.append(exc)
 
     def respond(self, invoke_id: int, service: int, content: bytes) -> None:

@@ -12,6 +12,7 @@ from conftest import DATA_DIR
 
 from open61850 import ber
 from open61850.data import BitStringData, BoolData, FloatData, IntData, StructureData, TimestampData
+from open61850.display import format_value
 from open61850.mms import ObjectName, pdu
 from open61850.mms.types import (
     PrimitiveType,
@@ -21,8 +22,6 @@ from open61850.mms.types import (
     label,
 )
 from open61850.quality import Quality, TimeQuality
-
-from open61850.display import format_value
 
 SERVICES = json.loads((DATA_DIR / "iedscout_services.json").read_text())
 

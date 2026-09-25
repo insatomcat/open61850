@@ -120,7 +120,7 @@ def _read_pcap(handle: BinaryIO, order: str, units: int) -> Iterator[CapturedFra
 
 
 class _Interface:
-    __slots__ = ("linktype", "snaplen", "units", "offset")
+    __slots__ = ("linktype", "offset", "snaplen", "units")
 
     def __init__(self, linktype: int, snaplen: int, units: int, offset: int) -> None:
         self.linktype = linktype

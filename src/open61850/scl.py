@@ -174,15 +174,12 @@ class GooseControlBlock:
         a = self.address
         if a is None or a.mac is None or a.app_id is None:
             raise SclError(f"{self.gocb_ref} has no GSE address with MAC and APPID")
-        timing = {}
-        if a.min_time_ms:
-            timing["min_time_ms"] = a.min_time_ms
-        if a.max_time_ms:
-            timing["max_time_ms"] = max(a.max_time_ms, a.min_time_ms or 0)
+        min_time = a.min_time_ms or 4
+        max_time = max(a.max_time_ms or 1000, min_time)
         return GooseControl(
             self.gocb_ref, self.data_set_reference or "", a.app_id, a.mac, src_mac, go_id=self.go_id,
             conf_rev=self.conf_rev, vlan_id=a.vlan_id, vlan_priority=a.vlan_priority if a.vlan_id is not None else None,
-            **timing,
+            min_time_ms=min_time, max_time_ms=max_time,
         )
 
 
@@ -270,9 +267,10 @@ def _p(address: ET.Element, kind: str) -> Optional[str]:
 
 
 def _ms(element: Optional[ET.Element]) -> Optional[int]:
-    if element is None or not (element.text or "").strip():
+    text = "" if element is None else (element.text or "").strip()
+    if element is None or not text:
         return None
-    value = float(element.text.strip())
+    value = float(text)
     if element.get("unit", "s") == "s" and element.get("multiplier", "m") == "":
         value *= 1000  # plain seconds
     return round(value)
@@ -355,7 +353,7 @@ def _ieds(root: ET.Element) -> list[SclIed]:
                     ied.sv_controls.append(SvControlBlock(
                         ied.name, inst, domain, sc.get("name", ""), sc.get("datSet") or None,
                         int(sc.get("confRev", "0")), sc.get("smvID", ""),
-                        int(sc.get("smpRate")) if sc.get("smpRate") else None, sc.get("smpMod", "SmpPerPeriod"),
+                        int(sc.get("smpRate", "0")) or None, sc.get("smpMod", "SmpPerPeriod"),
                         int(sc.get("nofASDU", "1")), sc.get("multicast", "true") == "true",
                         smv.get((ied.name, inst, sc.get("name", ""))),
                     ))

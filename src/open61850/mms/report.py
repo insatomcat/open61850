@@ -17,11 +17,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, TypeVar, cast
 
-from ..data import BitStringData, BoolData, IECData, IntData, OctetStringData, TimestampData, UIntData, VisibleStringData
+from ..data import BitStringData, BoolData, IntData, OctetStringData, TimestampData, UIntData, VisibleStringData
 from .errors import DataAccessError, MmsProtocolError
-from .pdu import InformationReport
+from .pdu import AccessResult, InformationReport
+
+_D = TypeVar("_D")
+_F = TypeVar("_F", bound="_Flags")
 
 __all__ = [
     "bits_of",
@@ -40,7 +43,7 @@ __all__ = [
 
 def bits_of(value: BitStringData) -> list[bool]:
     """The bits of a bit string, first bit first."""
-    out = []
+    out: list[bool] = []
     for byte in value.value:
         out.extend(bool(byte & (0x80 >> i)) for i in range(8))
     return out[: len(out) - value.unused_bits] if value.unused_bits else out
@@ -61,13 +64,13 @@ class _Flags:
     SIZE = 0
 
     @classmethod
-    def from_bitstring(cls, value: BitStringData):  # type: ignore[no-untyped-def]
+    def from_bitstring(cls: type[_F], value: BitStringData) -> _F:
         bits = bits_of(value) + [False] * cls.SIZE
-        names = [f.name for f in fields(cls)]  # type: ignore[arg-type]
+        names = [f.name for f in fields(cast(Any, cls))]  # the subclasses are dataclasses
         return cls(**{name: bits[i + 1] for i, name in enumerate(names)})  # bit 0 is reserved
 
     def to_bitstring(self) -> BitStringData:
-        values = [getattr(self, f.name) for f in fields(self)]  # type: ignore[arg-type]
+        values = [getattr(self, f.name) for f in fields(cast(Any, self))]
         return bitstring_of([False, *values][: self.SIZE])
 
 
@@ -118,7 +121,7 @@ class ReasonCode(_Flags):
 @dataclass
 class ReportEntry:
     index: int  # position of the member in the data set
-    value: IECData
+    value: AccessResult  # a DataAccessError when the server sent one in place of the value
     reference: Optional[str] = None
     reason: Optional[ReasonCode] = None
 
@@ -154,7 +157,7 @@ def decode_report(message: InformationReport) -> Report:
     results = list(message.results)
     pos = 0
 
-    def take(kind: type, what: str) -> IECData:
+    def take(kind: type[_D], what: str) -> _D:
         nonlocal pos
         if pos >= len(results):
             raise ReportDecodeError(f"report truncated before {what}")
@@ -172,34 +175,34 @@ def decode_report(message: InformationReport) -> Report:
         if isinstance(value, IntData):  # some servers send INT32U fields as integer
             pos += 1
             return value.value
-        return take(UIntData, what).value  # type: ignore[union-attr]
+        return take(UIntData, what).value
 
     report = Report(
-        rpt_id=take(VisibleStringData, "RptID").value,  # type: ignore[union-attr]
-        opt_flds=OptFlds.from_bitstring(take(BitStringData, "OptFlds")),  # type: ignore[arg-type]
+        rpt_id=take(VisibleStringData, "RptID").value,
+        opt_flds=OptFlds.from_bitstring(take(BitStringData, "OptFlds")),
     )
     opt = report.opt_flds
     if opt.sequence_number:
         report.seq_num = take_uint("SeqNum")
     if opt.report_time_stamp:
-        report.time_of_entry = take(TimestampData, "TimeOfEntry").value  # type: ignore[union-attr]
+        report.time_of_entry = take(TimestampData, "TimeOfEntry").value
     if opt.data_set_name:
-        report.data_set = take(VisibleStringData, "DatSet").value  # type: ignore[union-attr]
+        report.data_set = take(VisibleStringData, "DatSet").value
     if opt.buffer_overflow:
-        report.buf_ovfl = take(BoolData, "BufOvfl").value  # type: ignore[union-attr]
+        report.buf_ovfl = take(BoolData, "BufOvfl").value
     if opt.entry_id:
-        report.entry_id = take(OctetStringData, "EntryID").value  # type: ignore[union-attr]
+        report.entry_id = take(OctetStringData, "EntryID").value
     if opt.conf_revision:
         report.conf_rev = take_uint("ConfRev")
     if opt.segmentation:
         report.sub_seq_num = take_uint("SubSeqNum")
-        report.more_segments_follow = take(BoolData, "MoreSegmentsFollow").value  # type: ignore[union-attr]
-    report.inclusion = bits_of(take(BitStringData, "InclusionBitstring"))  # type: ignore[arg-type]
+        report.more_segments_follow = take(BoolData, "MoreSegmentsFollow").value
+    report.inclusion = bits_of(take(BitStringData, "InclusionBitstring"))
     indexes = [i for i, included in enumerate(report.inclusion) if included]
 
     references: list[Optional[str]] = [None] * len(indexes)
     if opt.data_reference:
-        references = [take(VisibleStringData, "data-reference").value for _ in indexes]  # type: ignore[union-attr]
+        references = [take(VisibleStringData, "data-reference").value for _ in indexes]
     values = []
     for _ in indexes:
         if pos >= len(results):
@@ -208,12 +211,12 @@ def decode_report(message: InformationReport) -> Report:
         pos += 1
     reasons: list[Optional[ReasonCode]] = [None] * len(indexes)
     if opt.reason_for_inclusion:
-        reasons = [ReasonCode.from_bitstring(take(BitStringData, "ReasonCode")) for _ in indexes]  # type: ignore[arg-type]
+        reasons = [ReasonCode.from_bitstring(take(BitStringData, "ReasonCode")) for _ in indexes]
     if pos != len(results):
         raise ReportDecodeError(f"{len(results) - pos} unexpected trailing results")
 
     report.entries = [
-        ReportEntry(index, value, reference, reason)  # type: ignore[arg-type]
+        ReportEntry(index, value, reference, reason)
         for index, value, reference, reason in zip(indexes, values, references, reasons)
     ]
     return report

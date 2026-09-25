@@ -40,8 +40,8 @@ from .errors import (
 )
 from .pdu import InformationReport, ObjectName
 from .reference import Name, data_set_object_name, to_object_name
-from .types import MmsType, get_variable_access_attributes_response
 from .transport import IsoConnection
+from .types import MmsType, get_variable_access_attributes_response
 
 __all__ = [
     "InformationReportCallback",
@@ -270,8 +270,8 @@ class MmsClient:
         :class:`~open61850.mms.reference.Reference`, or text:
         ``IED01_LD0/LLN0.Mod.stVal[ST]`` or ``IED01_LD0/LLN0$ST$Mod$stVal``.
         """
-        names = [to_object_name(n) for n in names]
-        results = pdu.read_response(self._service(pdu.read_request(names), pdu.SERVICE_READ))
+        objects = [to_object_name(n) for n in names]
+        results = pdu.read_response(self._service(pdu.read_request(objects), pdu.SERVICE_READ))
         if len(results) != len(names):
             raise MmsProtocolError(f"read {len(names)} variables, got {len(results)} results")
         return results
@@ -284,8 +284,8 @@ class MmsClient:
         return result
 
     def write_many(self, names: Sequence[Name], values: list[IECData]) -> list[Optional[DataAccessError]]:
-        names = [to_object_name(n) for n in names]
-        results = pdu.write_response(self._service(pdu.write_request(names, values), pdu.SERVICE_WRITE))
+        objects = [to_object_name(n) for n in names]
+        results = pdu.write_response(self._service(pdu.write_request(objects, values), pdu.SERVICE_WRITE))
         if len(results) != len(names):
             raise MmsProtocolError(f"wrote {len(names)} variables, got {len(results)} results")
         return results
@@ -313,7 +313,7 @@ class MmsClient:
 
 
 def _recv_with_timeout(conn: IsoConnection, timeout: float) -> Optional[bytes]:
-    sock = conn._sock  # noqa: SLF001 - the association is the only blocking read with a deadline
+    sock = conn._sock
     sock.settimeout(timeout)
     try:
         return conn.recv()

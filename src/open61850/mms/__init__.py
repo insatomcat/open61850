@@ -15,7 +15,7 @@
 - :mod:`.model`: the server's data model (logical devices, nodes, data, control blocks), discovered.
 """
 
-from . import association
+from . import association as association
 from .association import Association, AssociationError, AssociationParameters
 from .client import MmsClient
 from .control import ControlError, ControlResult, LastApplError, Origin, operate
@@ -28,6 +28,7 @@ from .errors import (
     MmsTimeout,
     ServiceError,
 )
+from .model import LogicalDevice, LogicalNode, ServerModel, discover
 from .pdu import (
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
@@ -35,10 +36,9 @@ from .pdu import (
     InformationReport,
     ObjectName,
 )
-from .types import MmsType
 from .reference import Reference, to_object_name
-from .model import LogicalDevice, LogicalNode, ServerModel, discover
 from .report import OptFlds, ReasonCode, Report, ReportEntry, TrgOps, decode_report, is_report
+from .types import MmsType
 
 __all__ = [
     "MmsClient", "Association", "AssociationParameters", "AssociationError", "ObjectName", "InformationReport", "MmsType",

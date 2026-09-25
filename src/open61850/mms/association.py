@@ -266,16 +266,16 @@ def decode_initiate_response(mms_pdu: bytes) -> Association:
     if tlv.tag != 0xA9:
         raise MmsProtocolError(f"expected initiate-ResponsePDU, got tag 0x{tlv.tag:X}")
     f = _fields(tlv.value)
-    detail = _fields(f.get(0xA4, b""))
+    init_detail = _fields(f.get(0xA4, b""))
     try:
         return Association(
             max_pdu_size=ber.decode_integer(f[0x80]) if 0x80 in f else None,
             max_outstanding_calling=ber.decode_integer(f[0x81]),
             max_outstanding_called=ber.decode_integer(f[0x82]),
             nesting_level=ber.decode_integer(f[0x83]) if 0x83 in f else None,
-            version=ber.decode_integer(detail[0x80]),
-            parameter_cbb=detail.get(0x81, b"\x00")[1:],
-            services_supported=detail.get(0x82, b"\x00")[1:],
+            version=ber.decode_integer(init_detail[0x80]),
+            parameter_cbb=init_detail.get(0x81, b"\x00")[1:],
+            services_supported=init_detail.get(0x82, b"\x00")[1:],
         )
     except KeyError as exc:
         raise MmsProtocolError(f"initiate-ResponsePDU without field 0x{exc.args[0]:X}") from exc

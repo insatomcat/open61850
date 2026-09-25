@@ -245,7 +245,7 @@ def encode_int32_samples(values: list[tuple[int, int]]) -> bytes:
 _PUBLISHER_NAMES = ("Publisher", "SvStream", "Wave", "Fault", "Playback", "three_phase")
 
 
-def __getattr__(name: str):  # noqa: ANN202 - lazy re-export, avoids an import cycle
+def __getattr__(name: str):
     if name in _PUBLISHER_NAMES:
         from . import sv_publisher
 

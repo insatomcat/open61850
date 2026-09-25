@@ -56,7 +56,7 @@ def test_request_parameters() -> None:
     assert [t.tag for t in ber.iter_tlvs(apdu.value)] == [0xA1, 0xBE]  # context name and user-information only
     initiate = ber.decode_tlv(apdu.value, len(ber.encode_tlv(0xA1, b"\x06\x05" + bytes(5))))
     external = ber.decode_tlv(initiate.value)
-    single = [t for t in ber.iter_tlvs(external.value) if t.tag == 0xA0][0]
+    single = next(t for t in ber.iter_tlvs(external.value) if t.tag == 0xA0)
     fields = {t.tag: t.value for t in ber.iter_tlvs(ber.decode_tlv(single.value).value)}
     assert fields[0x81] == fields[0x82] == b"\x02" and 0x80 not in fields and 0x83 not in fields
 

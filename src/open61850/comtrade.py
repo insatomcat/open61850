@@ -276,7 +276,7 @@ def resample(times: list[float], values: list[float], rate: int) -> list[float]:
     clean = [0.0 if math.isnan(v) else v for v in values]
     t0, span = times[0], times[-1] - times[0]
     out = []
-    for k in range(int(math.floor(span * rate + 1e-9)) + 1):
+    for k in range(math.floor(span * rate + 1e-9) + 1):
         t = t0 + k / rate
         j = bisect.bisect_right(times, t) - 1
         if j >= len(times) - 1:

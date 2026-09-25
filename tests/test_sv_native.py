@@ -12,8 +12,17 @@ import time
 import pytest
 
 from open61850 import sv
-from open61850.sv_publisher import Fault, Playback, Publisher, SvStream, Wave, build_template, render_frame, three_phase
-from open61850.sv_publisher import _native_streams
+from open61850.sv_publisher import (
+    Fault,
+    Playback,
+    Publisher,
+    SvStream,
+    Wave,
+    _native_streams,
+    build_template,
+    render_frame,
+    three_phase,
+)
 
 rt = pytest.importorskip("open61850_rt")
 BASES = [0, 1_790_000_000, 2_000_000_000]

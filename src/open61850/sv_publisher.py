@@ -42,13 +42,13 @@ import dataclasses
 import math
 import signal
 import socket
-import sys
 import struct
+import sys
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from collections.abc import Iterable
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Union
 
 from . import ber, sv
 
@@ -215,7 +215,7 @@ class Playback:
         if len(scales) != len(channels):
             raise ValueError("one scale per channel")
         times = record.times()
-        columns = []
+        columns: list[Optional[list[int]]] = []
         for ref, scale in zip(channels, scales):
             if ref is None:
                 columns.append(None)
@@ -283,7 +283,7 @@ def three_phase(
     va = Wave(v_peak if va_peak is None else va_peak, 0.0, freq_hz, scale=v_scale)
     vb = Wave(v_peak, -120.0, freq_hz, scale=v_scale)
     vc = Wave(v_peak, -240.0, freq_hz, scale=v_scale)
-    zero_i, zero_v = Wave(scale=i_scale), Wave(scale=v_scale)
+    zero_i = Wave(scale=i_scale)
     if layout.upper() == "6I3U":
         return (ia, ib, ic, residual, zero_i, zero_i, va, vb, vc)
     if layout.upper() == "4I4U":
@@ -522,8 +522,8 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
             fault = {"waves": waves(f.waves), "cycle_s": f.cycle_s, "offset_s": f.offset_s,
                      "start_smp": f.start_smp, "duration_s": f.duration_s}
         playback = None
-        if stream.playback is not None and stream.playback.start_second is not None:
-            pb = stream.playback
+        pb = stream.playback
+        if pb is not None and pb.start_second is not None:
             playback = {
                 # Native-endian 32-bit integers, one row after the other.
                 "values": array.array("i", [v for row in pb.values for v in row]).tobytes(),

@@ -26,8 +26,7 @@ from open61850.data import (
     decode_data_sequence,
     encode_data,
 )
-from open61850.mms import MmsClient, ObjectName, pdu
-from open61850.mms import control
+from open61850.mms import MmsClient, ObjectName, control, pdu
 from open61850.mms.control import ControlError, LastApplError, Origin, operate
 
 CAPTURE = json.loads((DATA_DIR / "iedscout_reports_control.json").read_text())

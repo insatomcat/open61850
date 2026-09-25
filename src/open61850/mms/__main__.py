@@ -42,16 +42,17 @@ from open61850.display import format_value
 from open61850.mms import (
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
+    DataAccessError,
     InformationReport,
     MmsClient,
     MmsError,
-    ObjectName,
-    decode_report,
-    is_report,
     MmsType,
+    ObjectName,
     ServerModel,
     control,
+    decode_report,
     discover,
+    is_report,
     rcb,
     to_object_name,
 )
@@ -225,7 +226,9 @@ def cmd_subscribe(client: MmsClient, args: argparse.Namespace, reports: queue.Qu
                 mms_type = types[entry.index] if entry.index < len(types) else None
                 reason = [k for k, v in vars(entry.reason).items() if v] if entry.reason else []
                 print(f"  {name}  ({','.join(reason)})")
-                print(f"      {format_value(entry.value, mms_type)}")
+                value = entry.value
+                shown = f"access error: {value}" if isinstance(value, DataAccessError) else format_value(value, mms_type)
+                print(f"      {shown}")
     except KeyboardInterrupt:
         pass
     finally:

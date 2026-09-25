@@ -49,3 +49,35 @@ open61850 = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+line-length = 130
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "RUF"]
+# The code writes Optional[...] and Union[...], and zips lists whose lengths it checked.
+ignore = ["UP007", "UP045", "RUF022", "RUF005", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# Golden bytes and long assertions read better on one line.
+"tests/*" = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses: safe as default arguments.
+extend-immutable-calls = ["open61850.mms.association.AssociationParameters", "open61850.mms.control.Origin",
+                          "AssociationParameters", "Origin"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["open61850"]
+known-third-party = ["conftest"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/open61850"]
+check_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["open61850_rt"]  # the optional native engine
+ignore_missing_imports = true
