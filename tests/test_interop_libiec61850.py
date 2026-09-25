@@ -317,3 +317,57 @@ def test_compare_scl_command_line(basic_io) -> None:
         capture_output=True, text=True, env={**os.environ, "PYTHONPATH": "src"},
     )
     assert run.returncode == 1 and "missing attribute" in run.stdout
+
+
+def _example(name: str, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, f"examples/{name}", *args], capture_output=True, text=True, timeout=timeout,
+                          env={**os.environ, "PYTHONPATH": "src"})
+
+
+def test_examples_against_the_servers(basic_io, control_server) -> None:
+    run = _example("browse_and_read.py", "127.0.0.1", "--port", str(BASIC_IO))
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.startswith(f"{LD}: LLN0, LPHD1, GGIO1") or run.stdout.startswith(f"{LD}: GGIO1")
+    assert f"{LD}/GGIO1.AnIn1.mag.f [MX] = " in run.stdout
+
+    run = _example("operate.py", "127.0.0.1", f"{LD}/GGIO1.SPCSO4", "true", "--port", str(CONTROL))
+    assert run.returncode == 0 and run.stdout.startswith("sbo-with-enhanced-security"), run.stdout + run.stderr
+
+    run = _example("check_ied_against_scl.py", "127.0.0.1", f"{SCL_DIR}/simpleIO_direct_control.cid", "--port", str(BASIC_IO))
+    assert run.returncode == 0 and run.stdout.strip() == "the IED matches its SCL", run.stdout + run.stderr
+
+    run = _example("subscribe_reports.py", "127.0.0.1", f"{LD}/LLN0$BR$Measurements", "--port", str(BASIC_IO),
+                   "--seconds", "3")
+    assert run.returncode == 0, run.stderr
+    lines = run.stdout.splitlines()
+    assert lines[0].startswith(f"enabled {LD}/LLN0$BR$Measurements0") and lines[-1].startswith("released")
+    assert len(lines) >= 4  # at least two reports in 3 s (integrity every 2 s, plus the GI)
+
+
+@needs_raw
+def test_publishing_examples_on_lo() -> None:
+    from open61850 import goose, sv
+    from open61850.capture import PacketCapture
+
+    with PacketCapture("lo", (0x88B8, 0x88BA), outgoing=False) as cap:
+        trip = subprocess.Popen([sys.executable, "examples/goose_trip.py", "lo", f"{SCL_DIR}/simpleIO_direct_control_goose.cid",
+                                 "gcbAnalogValues", "02:00:00:00:00:01", "--after", "0.5"],
+                                env={**os.environ, "PYTHONPATH": "src"}, stdout=subprocess.DEVNULL)
+        mu = subprocess.Popen([sys.executable, "examples/merging_unit.py", "lo", "--seconds", "2"],
+                              env={**os.environ, "PYTHONPATH": "src"}, stdout=subprocess.DEVNULL)
+        frames = []
+        end = time.monotonic() + 4.5
+        while time.monotonic() < end:
+            frame = cap.recv()
+            if frame is not None:
+                frames.append(frame.data)
+        assert trip.wait(10) == 0 and mu.wait(10) == 0
+    states = {}
+    sv_ids = set()
+    for raw in frames:
+        if (g := goose.decode_goose_frame(raw)) is not None:
+            states.setdefault(g[1].st_num, [d.value for d in g[1].all_data])
+        elif (s := sv.decode_sv_frame(raw)) is not None:
+            sv_ids.update(a.sv_id for a in s[1].asdus)
+    assert states[1] == [False] * 4 and states[2] == [True, False, False, False]  # AnalogValues has 4 members
+    assert sv_ids == {"IED01_MU01_SV1"}

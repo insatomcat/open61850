@@ -188,7 +188,7 @@ supervised, none missed.
 
 ## Tests
 
-`python -m pytest`. `ruff check src tests tools` and `mypy` (configured in
+`python -m pytest`. `ruff check src tests tools examples` and `mypy` (configured in
 `pyproject.toml`, versions pinned in CI) must pass: typed accessors over
 `# type: ignore`, and `Optional[...]` as the code writes it. Golden bytes come from IED captures (IEDscout), round
 trips, and a fake IED on a socketpair for the client. The AF_PACKET tests

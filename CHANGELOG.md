@@ -33,6 +33,8 @@
   and the data model of the DataTypeTemplates (`load_model`).
   `open61850.mms.model.compare` and `open61850-mms compare-scl` check an IED
   against its SCL; libiec61850's examples match theirs exactly.
+- `examples/`: seven runnable programs, run in CI against libiec61850.
+- CI: ruff and mypy, macOS and Windows for the pure Python part.
 - `open61850.comtrade`: COMTRADE records read (1991, 1999, 2013; ASCII and
   binary formats) and resampled.
 

@@ -4,7 +4,7 @@ IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, repo
 
 It was written for a test and diagnostic platform of a digital substation process bus, and checked there against real IEDs (a Schneider VMC7 and an ABB SSC600). The other open-source IEC 61850 stack, libiec61850, is GPL; open61850 is an alternative for projects that cannot take a GPL dependency.
 
-**Status**: alpha. The MMS client side and SV publication are what exist and what has been tested; there is no MMS server yet. Until 1.0, minor versions may change the API.
+**Status**: alpha. The MMS client, GOOSE and SV publication and supervision, SCL and COMTRADE are what exist; each is tested, against two IED families and, in CI, against libiec61850. There is no MMS server yet. Until 1.0, minor versions may change the API.
 
 ## Installation
 
@@ -232,6 +232,20 @@ sudo open61850-supervise --live eth1
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
 - Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers, publishers and subscriber (model, reads, reports, the four control models, GOOSE both ways, SV); reports of other IEDs are welcome.
 
+## More examples
+
+[`examples/`](examples) has short programs, each runnable as it is and run in CI against libiec61850:
+
+| Example | What it does |
+|---------|--------------|
+| `browse_and_read.py` | Discover the data model, read the measurements |
+| `subscribe_reports.py` | Take a free report control block instance, print its reports, release it |
+| `operate.py` | Operate a switch with its own control model |
+| `check_ied_against_scl.py` | Compare an IED with its CID/SCD |
+| `goose_trip.py` | Publish a GOOSE control block from an SCL file and send a trip |
+| `merging_unit.py` | Act as a merging unit, with a periodic fault or a COMTRADE record |
+| `supervise_bus.py` | Watch GOOSE and SV streams from a capture file or live |
+
 ## Development
 
 ```bash
@@ -241,7 +255,7 @@ python -m pytest
 
 The tests need no network. `tools/interop/run.sh` runs the interoperability tests against libiec61850's example programs in Docker (libiec61850 is only run there, as a peer, never linked or shipped). The AF_PACKET capture tests run on Linux as root (`sudo python -m pytest tests/test_capture.py`); on another OS, `docker run --rm --privileged -v "$PWD":/src -w /src python:3.13-slim sh -c "pip install pytest && python -m pytest"`.
 
-Maintainer notes (what the IED captures taught, design decisions) are in [AGENTS.md](AGENTS.md).
+How to contribute is in [CONTRIBUTING.md](CONTRIBUTING.md); maintainer notes (what the IED captures taught, design decisions) in [AGENTS.md](AGENTS.md).
 
 ## License
 
