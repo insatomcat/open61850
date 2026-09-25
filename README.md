@@ -1,15 +1,16 @@
 # open61850
 
-IEC 61850 in pure Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), GOOSE and Sampled Values codecs, an SCL reader and a Linux capture for the process bus. Standard library only, Python 3.10 or later.
+IEC 61850 for Python, under the Apache 2.0 licence: an MMS client (reports, report control blocks, controls), GOOSE and Sampled Values codecs, Sampled Values publication with a real-time engine, an SCL reader and a Linux capture for the process bus. The library is pure Python (standard library only, Python 3.10 or later); the optional real-time engine is in Rust.
 
 It was written for a test and diagnostic platform of a digital substation process bus, and checked there against real IEDs (a Schneider VMC7 and an ABB SSC600). The other open-source IEC 61850 stack, libiec61850, is GPL; open61850 is an alternative for projects that cannot take a GPL dependency.
 
-**Status**: alpha. The client side is what exists and what has been tested; there is no server yet. Until 1.0, minor versions may change the API.
+**Status**: alpha. The MMS client side and SV publication are what exist and what has been tested; there is no MMS server yet. Until 1.0, minor versions may change the API.
 
 ## Installation
 
 ```bash
 pip install open61850
+pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86_64 and aarch64)
 ```
 
 ## What is in it
@@ -22,6 +23,7 @@ pip install open61850
 | `open61850.mms.control` | Controls: direct and select-before-operate, normal and enhanced security (waits for the CommandTermination, reports the LastApplError AddCause) |
 | `open61850.goose` | GOOSE PDUs and frames (IEC 61850-8-1) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
+| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
 | `open61850.quality` | Quality and TimeQuality in readable form |
@@ -29,7 +31,7 @@ pip install open61850
 | `open61850.capture` | GOOSE and SV capture on Linux from an AF_PACKET TPACKET_V3 ring, kernel timestamps, 802.1Q tags restored, no libpcap |
 | `open61850.ber` | ASN.1 BER primitives |
 
-Only `open61850.mms` and `open61850.capture` do I/O. The public names of each module are those of its `__all__`.
+Only `open61850.mms`, `open61850.capture` and the `Publisher` of `open61850.sv_publisher` do I/O. The public names of each module are those of its `__all__`.
 
 ## Examples
 
@@ -96,6 +98,25 @@ with PacketCapture("eth1") as cap:
             print(frame.timestamp, [(a.sv_id, a.smp_cnt) for a in pdu.asdus])
 ```
 
+Publish Sampled Values, as a merging unit or a simulator would (Linux, root):
+
+```python
+from open61850.sv import Publisher, SvStream, Fault, three_phase
+
+stream = SvStream(
+    sv_id="MU01_SV1", app_id=0x4000, dst_mac="01:0c:cd:04:00:01", src_mac="02:00:00:00:00:01",
+    waves=three_phase(i_peak=10, v_peak=100, i_lag_deg=30),               # 6I3U: Ia Ib Ic Ires In Ih Va Vb Vc
+    fault=Fault(three_phase(i_peak=10, v_peak=100, ia_peak=50, va_peak=20), cycle_s=4),  # every 4 s, for 2 s
+    conf_rev=1, smp_synch=2, vlan_id=100, vlan_priority=4,
+)
+with Publisher("eth1", rate=4800, asdus_per_frame=2, rt_priority=50) as pub:
+    pub.add(stream)
+    pub.start()          # at the next second: smpCnt 0 goes out on the second
+    ...
+```
+
+Waveforms are functions of UNIX time, so several streams, processes or machines on the same clock stay in phase. With `open61850[rt]` the frames are sent by the Rust engine: absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for all streams, optional `SCHED_FIFO` priority and CPU pinning. Without it, a Python thread sends the same frames, with only the precision of `time.sleep` (tests, low rates). Measured on loopback on a Xeon server, 3 streams at 4800 samples/s, `SCHED_FIFO` 50: every sample sent, delay after the nominal sample time median 6 µs, 99th percentile 14 µs, maximum 46 µs over 10 s.
+
 ## Command line
 
 ```bash
@@ -112,7 +133,8 @@ open61850-mms 192.0.2.10 operate 'IED01_BayLD/CBCSWI1$CO$Pos' open
 
 ## Scope and limits
 
-- Client side only: no MMS server, no GOOSE/SV publisher service (the codecs encode, sending frames is up to the application).
+- No MMS server; GOOSE is encoded and decoded, but publishing it (retransmission scheme) is up to the application.
+- SV publication sends sinusoids and periodic faults; arbitrary sample sources (replay, live measurements) are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
 - Tested against two IED families so far; reports of other IEDs are welcome.

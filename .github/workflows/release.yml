@@ -1,8 +1,9 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-# Publishes to PyPI on a version tag, through PyPI trusted publishing
-# (project open61850, workflow release.yml, environment pypi): no token.
+# Publishes open61850 and open61850-rt to PyPI on a version tag, through PyPI
+# trusted publishing (workflow release.yml, environment pypi, registered on
+# both projects): no token. Both carry the version of the tag.
 
 name: release
 
@@ -11,27 +12,60 @@ on:
     tags: ["v*"]
 
 jobs:
-  build:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Check that the tag matches the package version
+      - name: Check that the tag matches both versions
         run: |
-          version=$(python -c "import sys; sys.path.insert(0, 'src'); import open61850; print(open61850.__version__)")
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, package $version"; exit 1; }
+          py=$(python -c "import sys; sys.path.insert(0, 'src'); import open61850; print(open61850.__version__)")
+          rs=$(sed -n 's/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
+          test "v$py" = "$GITHUB_REF_NAME" -a "v$rs" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, open61850 $py, open61850-rt $rs"; exit 1; }
       - run: python -m pip install build pytest
       - run: python -m pytest
       - run: python -m build
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-python
           path: dist/
 
+  native:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: native
+          target: ${{ matrix.target }}
+          manylinux: "2014"
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-native-${{ matrix.target }}
+          path: native/dist/
+
+  native-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: native
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-native-sdist
+          path: native/dist/
+
   publish:
-    needs: build
+    needs: [python, native, native-sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -39,6 +73,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
           path: dist/
+          merge-multiple: true
+      - run: ls -l dist/
       - uses: pypa/gh-action-pypi-publish@release/v1

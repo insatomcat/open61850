@@ -19,10 +19,12 @@ With I/O:
 - :mod:`open61850.mms`: MMS client over TCP (association, reads, writes,
   reports, report control blocks, controls).
 - :mod:`open61850.capture`: GOOSE and SV capture on Linux (AF_PACKET ring).
+- :mod:`open61850.sv_publisher`: Sampled Values publication (streams, waveforms,
+  faults); real-time sending with the ``open61850-rt`` engine (``open61850[rt]``).
 
 The names listed in each module's ``__all__`` (or, for :mod:`open61850.mms`,
 exported by the package) are the public API; anything with a leading
 underscore is internal. Until 1.0, minor versions may change the API.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"

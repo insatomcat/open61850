@@ -1,0 +1,28 @@
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "open61850-rt"
+dynamic = ["version"]
+description = "Real-time Sampled Values engine of open61850 (Linux)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Florent Carli" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: System :: Networking",
+]
+
+[project.urls]
+Repository = "https://github.com/insatomcat/open61850"
+
+[tool.maturin]
+module-name = "open61850_rt"

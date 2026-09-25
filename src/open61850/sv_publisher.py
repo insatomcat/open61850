@@ -424,12 +424,13 @@ class _PythonEngine:
     def _run(self, sock: socket.socket) -> None:
         period_ns = 1_000_000_000 * self.asdus // self.rate
         frames_per_second = self.rate // self.asdus
+        # Each deadline is computed from the second, so rounding never accumulates.
         k = 0
         with sock:
             while not self._stop.is_set():
                 second, index = divmod(k, frames_per_second)
                 second += self.start_second
-                target = second * 1_000_000_000 + index * period_ns
+                target = second * 1_000_000_000 + index * self.asdus * 1_000_000_000 // self.rate
                 delay = target - time.time_ns()
                 if delay > 0:
                     if self._stop.wait(delay / 1e9):

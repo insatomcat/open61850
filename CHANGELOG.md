@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Sampled Values publication (`open61850.sv_publisher`, re-exported by
+  `open61850.sv`): streams, waveforms aligned on the UNIX epoch, periodic
+  faults, 6I3U and 4I4U data sets, simulation bit, frame templates.
+- `open61850-rt`: the real-time engine in Rust (`pip install "open61850[rt]"`),
+  which produces the same bytes as the Python renderer; a Python thread
+  engine otherwise.
+
 ## 0.1.1 (2026-09-25)
 
 First release on PyPI; same code as 0.1.0, plus the release workflow.

@@ -34,6 +34,7 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `mms/rcb.py` | RCB status (RptEna, Resv/ResvTms, Owner, RptID, DatSet), `usable` / `find_free` among instances (`group_instances` strips the trailing number): free ones first, then the ones our own address reserved without enabling; `enable` reserves a BRCB with ResvTms first (the VMC7 refuses configuration writes otherwise; edition 1 BRCBs have no ResvTms), then typed, checked writes; `disable` also releases (ResvTms = 0 or Resv = FALSE). |
 | `mms/control.py` | `operate()`: ctlModel read from `CF`, then Oper (direct), SBO read + Oper, or SBOw + Oper; enhanced security waits for the CommandTermination. Refusals raise `ControlError` with the `LastApplError` (AddCause names per 7-2 Ed2). `Origin` defaults to station-control (orCat 2). Report listeners carry the LastApplError / termination to the waiting call. |
 | `mms/__main__.py` | The `open61850-mms` command line. |
+| `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). |
 
 Public API: each module's `__all__` (the `mms` package re-exports the usual
 names). Only `mms` and `capture` do I/O; the library configures no logging
@@ -91,6 +92,33 @@ instances unless it releases them (`rcb.disable`) or reclaims its own
 
 `rcb.enable` writes in this order, each write checked: ResvTms, IntgPd,
 TrgOps, OptFlds, PurgeBuf, EntryID=0, RptEna, then GI.
+
+## The native SV engine (`native/`)
+
+Rust crate `open61850-rt` built with maturin (PyO3, abi3 for Python 3.10+),
+published as the `open61850-rt` distribution; `open61850[rt]` pulls it on
+Linux. Python passes the templates, offsets and waveform parameters
+(`sv_publisher._native_streams`); the engine renders into one buffer per
+stream before each deadline, sleeps with `clock_nanosleep(CLOCK_REALTIME,
+TIMER_ABSTIME)` until the time of the frame's first sample, and sends all
+streams with one `sendmmsg`. Deadlines are computed from the second (no
+accumulated rounding). Priority (`SCHED_FIFO`) and CPU pinning are applied
+to the engine thread before it reports ready, so a refusal raises at
+`start()`.
+
+The sample maths mirrors `Wave.value` operation for operation: phase from
+`fmod(f * second, 1) + f * smpCnt / rate` (keeps precision at large UNIX
+times), `2 pi * cycles + to_radians(phase)`, libm `sin`, `round_ties_even`
+like Python's `round`. `tests/test_sv_native.py` compares the bytes of both
+renderers on random streams; keep them identical when changing either.
+
+Measured on a Xeon Gold server (loopback, 10 s, 3 streams at 4800
+samples/s): no priority, median 62 µs after the nominal time, p99 73 µs,
+max 0.9 ms; `SCHED_FIFO` 50, median 6 µs, p99 14 µs, max 46 µs. PO's C
+rt_sender at the same priority (1 stream): median 4 µs, p99 11 µs, max 38 µs.
+
+Building locally without Rust installed: Docker (`rust:1-slim-bookworm`
+plus `maturin`), or `quay.io/pypa/manylinux2014_x86_64` for an x86_64 wheel.
 
 ## Capture
 
