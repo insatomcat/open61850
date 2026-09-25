@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-09-25)
 
 - The MMS server executes controls: direct and select-before-operate, normal
   and enhanced security (CommandTermination, LastApplError), selection
