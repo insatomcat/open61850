@@ -59,7 +59,9 @@ jobs:
       - run: tools/interop/run.sh -v
 
   fuzz:
-    # Each open61850-core fuzz target for a minute (native/fuzz).
+    # Each open61850-core fuzz target for a minute (native/fuzz). The target
+    # is explicit: the prebuilt cargo-fuzz is a musl binary and would default
+    # to musl, which the sanitizers refuse.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -70,7 +72,7 @@ jobs:
       - working-directory: native/fuzz
         run: |
           for target in sv_decode goose_decode goose_roundtrip; do
-            cargo +nightly fuzz run "$target" -- -max_total_time=60
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$target" -- -max_total_time=60
           done
 
   native:
