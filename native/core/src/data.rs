@@ -1,16 +1,20 @@
 // Copyright 2026 Florent Carli
 // SPDX-License-Identifier: Apache-2.0
 
-//! MMS `Data` values (IEC 61850-8-1), written as `open61850.data.encode_data`
-//! writes them.
+//! MMS `Data` values (IEC 61850-8-1), read and written as `open61850.data`
+//! reads and writes them.
 //!
 //! A sequence of values is flat, in preorder: a `Structure(n)` or `Array(n)`
 //! is followed by its `n` members, each followed by its own members. The
 //! values `[Structure(2), Boolean(true), BitString(..), Integer(3)]` are two
 //! top-level values: a structure of a boolean and a bit string, then an
 //! integer. Nothing is allocated and the caller's array is the whole tree.
+//!
+//! Reading checks the TLV structure of every structure and array
+//! ([`check_sequence`]) without recursion, so any nesting depth is safe,
+//! then [`iter_sequence`] yields the values in the same preorder.
 
-use crate::ber::{self, BufferFull, Integer, Writer};
+use crate::ber::{self, BerError, BufferFull, Integer, Writer};
 use crate::time::UtcTime;
 
 pub const TAG_ARRAY: u32 = 0xA1;
@@ -22,6 +26,7 @@ pub const TAG_UNSIGNED: u32 = 0x86;
 pub const TAG_FLOAT: u32 = 0x87;
 pub const TAG_OCTET_STRING: u32 = 0x89;
 pub const TAG_VISIBLE_STRING: u32 = 0x8A;
+pub const TAG_BINARY_TIME: u32 = 0x8C;
 pub const TAG_MMS_STRING: u32 = 0x8F;
 pub const TAG_UTC_TIME: u32 = 0x91;
 
@@ -48,6 +53,8 @@ pub enum Data<'a> {
     VisibleString(&'a [u8]),
     MmsString(&'a [u8]),
     UtcTime(UtcTime),
+    /// TimeOfDay with date: milliseconds since midnight (4 octets), days since 1984-01-01 (2).
+    BinaryTime([u8; 6]),
     /// Followed by its members.
     Structure(usize),
     /// Followed by its elements.
@@ -85,6 +92,7 @@ impl Data<'_> {
             Data::VisibleString(_) => TAG_VISIBLE_STRING,
             Data::MmsString(_) => TAG_MMS_STRING,
             Data::UtcTime(_) => TAG_UTC_TIME,
+            Data::BinaryTime(_) => TAG_BINARY_TIME,
             Data::Structure(_) => TAG_STRUCTURE,
             Data::Array(_) => TAG_ARRAY,
             Data::Raw { tag, .. } => tag,
@@ -108,6 +116,7 @@ fn leaf_len(item: &Data<'_>) -> Result<usize, DataError> {
         }
         Data::OctetString(s) | Data::VisibleString(s) | Data::MmsString(s) => s.len(),
         Data::UtcTime(_) => 8,
+        Data::BinaryTime(_) => 6,
         Data::Raw { value, .. } => value.len(),
         Data::Structure(_) | Data::Array(_) => 0,
     })
@@ -166,6 +175,7 @@ fn write_one(items: &[Data<'_>], i: usize, w: &mut Writer<'_>) -> Result<usize, 
         }
         Data::OctetString(s) | Data::VisibleString(s) | Data::MmsString(s) => w.put(s)?,
         Data::UtcTime(t) => w.put(&t.encode())?,
+        Data::BinaryTime(t) => w.put(&t)?,
         Data::Raw { value, .. } => w.put(value)?,
         Data::Structure(n) | Data::Array(n) => {
             let mut member = i + 1;
@@ -184,6 +194,138 @@ pub fn write_sequence(items: &[Data<'_>], w: &mut Writer<'_>) -> Result<(), Data
         i = write_one(items, i, w)?;
     }
     Ok(())
+}
+
+// --- reading ------------------------------------------------------------------
+
+/// Number of TLVs tiling `content` exactly.
+fn count_tlvs(content: &[u8]) -> Result<usize, BerError> {
+    let mut n = 0;
+    for tlv in ber::iter_tlvs(content) {
+        tlv?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Offset of the content of the TLV `tlv`.
+fn content_start(tlv: &ber::Tlv<'_>) -> usize {
+    tlv.end - tlv.value.len()
+}
+
+/// Check a sequence of `Data` TLVs as `open61850.data.decode_data_sequence`
+/// does: the TLVs tile `content`, and so do the members of every structure
+/// (0xA2) and array (0xA1), at any depth. Return the number of top-level values.
+///
+/// No recursion and no stack: each structure's members are checked on their
+/// own, then one pass walks every value in preorder, stepping into the
+/// structures. Once every structure is tiled by its members, the pass leaves
+/// a structure exactly where its next sibling starts.
+pub fn check_sequence(content: &[u8]) -> Result<usize, BerError> {
+    let count = count_tlvs(content)?;
+    let mut at = 0;
+    while at < content.len() {
+        let tlv = ber::decode_tlv(content, at)?;
+        at = if tlv.tag == TAG_STRUCTURE || tlv.tag == TAG_ARRAY {
+            count_tlvs(tlv.value)?;
+            content_start(&tlv)
+        } else {
+            tlv.end
+        };
+    }
+    Ok(count)
+}
+
+/// An INTEGER's value when it fits in 64 bits (empty content reads as 0).
+fn signed(value: &[u8]) -> Option<i64> {
+    let Some(&first) = value.first() else { return Some(0) };
+    let fill = if first & 0x80 != 0 { 0xFF } else { 0x00 };
+    let mut v = value;
+    while v.len() > 1 && v[0] == fill && (v[1] & 0x80) == (fill & 0x80) {
+        v = &v[1..];
+    }
+    if v.len() > 8 {
+        return None;
+    }
+    let mut octets = [fill; 8];
+    octets[8 - v.len()..].copy_from_slice(v);
+    Some(i64::from_be_bytes(octets))
+}
+
+/// One value from its tag and content octets, as `open61850.data.decode_data`
+/// reads it; members of a structure or an array are the next values.
+///
+/// An INTEGER or unsigned value beyond 64 bits comes out as `Raw` (Python
+/// keeps it as an int). A tag of more than four octets comes out as `Raw`
+/// with tag `u32::MAX`.
+pub fn decode_value<'a>(tag: u32, value: &'a [u8]) -> Result<Data<'a>, BerError> {
+    Ok(match tag {
+        TAG_BOOLEAN => Data::Boolean(value.first().is_some_and(|&b| b != 0)),
+        TAG_BIT_STRING => Data::BitString { bits: value.get(1..).unwrap_or(&[]), unused: value.first().copied().unwrap_or(0) },
+        TAG_INTEGER => match signed(value) {
+            Some(v) => Data::Integer(v),
+            None => Data::Raw { tag, value },
+        },
+        TAG_UNSIGNED => match ber::decode_unsigned(value) {
+            Ok(v) => Data::Unsigned(v),
+            Err(BerError::EmptyInteger) => Data::Unsigned(0),
+            Err(_) => Data::Raw { tag, value },
+        },
+        TAG_FLOAT => match *value {
+            [_, a, b, c, d] => Data::Float32(f32::from_be_bytes([a, b, c, d])),
+            [_, a, b, c, d, e, f, g, h] => Data::Float64(f64::from_be_bytes([a, b, c, d, e, f, g, h])),
+            _ => Data::Raw { tag, value },
+        },
+        TAG_OCTET_STRING => Data::OctetString(value),
+        // IA5String and [0] VisibleString variants seen in the field.
+        TAG_VISIBLE_STRING | 0x1A | 0x80 => Data::VisibleString(value),
+        TAG_BINARY_TIME => match *value {
+            [a, b, c, d, e, f] => Data::BinaryTime([a, b, c, d, e, f]),
+            _ => Data::Raw { tag, value },
+        },
+        TAG_MMS_STRING => Data::MmsString(value),
+        TAG_UTC_TIME => match UtcTime::decode(value) {
+            Some(t) => Data::UtcTime(t),
+            None => Data::Raw { tag, value },
+        },
+        TAG_ARRAY => Data::Array(count_tlvs(value)?),
+        TAG_STRUCTURE => Data::Structure(count_tlvs(value)?),
+        _ => Data::Raw { tag, value },
+    })
+}
+
+/// The values of a sequence accepted by [`check_sequence`], in preorder.
+pub fn iter_sequence(content: &[u8]) -> Values<'_> {
+    Values { content, at: 0 }
+}
+
+/// Iterator over the values of a checked sequence; it stops at the first
+/// malformed TLV, which [`check_sequence`] would have refused.
+#[derive(Debug, Clone)]
+pub struct Values<'a> {
+    content: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Iterator for Values<'a> {
+    type Item = Data<'a>;
+
+    fn next(&mut self) -> Option<Data<'a>> {
+        if self.at >= self.content.len() {
+            return None;
+        }
+        let item = ber::decode_tlv(self.content, self.at).and_then(|tlv| Ok((tlv, decode_value(tlv.tag, tlv.value)?)));
+        match item {
+            Ok((tlv, value)) => {
+                self.at = if matches!(value, Data::Structure(_) | Data::Array(_)) { content_start(&tlv) } else { tlv.end };
+                Some(value)
+            }
+            Err(_) => {
+                self.at = self.content.len();
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +352,66 @@ mod tests {
             encode(&items, &mut buf).unwrap(),
             &[0xA2, 0x08, 0x83, 0x01, 0xFF, 0x84, 0x03, 0x03, 0x00, 0x00, 0xA1, 0x00, 0x86, 0x02, 0x00, 0x80]
         );
+    }
+
+    #[test]
+    fn reads_what_it_writes() {
+        let items = [
+            Data::Structure(3),
+            Data::Integer(-129),
+            Data::Array(1),
+            Data::Structure(0),
+            Data::BinaryTime([0, 0, 0, 1, 0, 2]),
+            Data::Unsigned(u64::MAX),
+            Data::Float32(1.5),
+        ];
+        let mut buf = [0u8; 64];
+        let n = sequence_len(&items).unwrap();
+        write_sequence(&items, &mut Writer::new(&mut buf)).unwrap();
+        assert_eq!(check_sequence(&buf[..n]), Ok(3));
+        let mut read = iter_sequence(&buf[..n]);
+        for item in items {
+            assert_eq!(read.next(), Some(item));
+        }
+        assert_eq!(read.next(), None);
+    }
+
+    #[test]
+    fn integers_as_python_reads_them() {
+        let cases: [(&[u8], Option<i64>); 8] = [
+            (&[], Some(0)),
+            (&[0xFF], Some(-1)),
+            (&[0x00, 0x80], Some(128)),
+            (&[0xFF, 0xFF, 0x7F], Some(-129)),
+            (&[0; 20], Some(0)),
+            (&[0xFF; 20], Some(-1)),
+            (&[0x00, 0x80, 0, 0, 0, 0, 0, 0, 0], None),
+            (&[0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], None),
+        ];
+        for (octets, expected) in cases {
+            assert_eq!(signed(octets), expected, "{octets:02X?}");
+        }
+    }
+
+    #[test]
+    fn deep_nesting_is_checked_without_recursion() {
+        // 10,000 structures, each holding the next.
+        const DEPTH: usize = 10_000;
+        let mut content = [0usize; DEPTH]; // content length of each level, outermost first
+        for level in (0..DEPTH - 1).rev() {
+            let inner = content[level + 1];
+            content[level] = ber::tlv_len(TAG_STRUCTURE, inner);
+        }
+        let mut buf = [0u8; 40_000];
+        let mut w = Writer::new(&mut buf);
+        for len in content {
+            w.put_header(TAG_STRUCTURE, len).unwrap();
+        }
+        let n = w.position();
+        assert_eq!(check_sequence(&buf[..n]), Ok(1));
+        assert_eq!(iter_sequence(&buf[..n]).count(), DEPTH);
+        buf[n - 1] = 1; // the innermost structure now runs past its parent
+        assert!(check_sequence(&buf[..n]).is_err());
     }
 
     #[test]

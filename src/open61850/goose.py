@@ -105,21 +105,29 @@ def decode_goose_pdu(apdu: bytes) -> GoosePDU:
         timestamp, time_quality = decode_utc_time(fields[_T])
         return GoosePDU(
             gocb_ref=fields[_GOCB_REF].decode("ascii", errors="replace"),
-            time_allowed_to_live=ber.decode_unsigned(fields[_TAL]),
+            time_allowed_to_live=_counter(fields[_TAL], "timeAllowedtoLive"),
             dat_set=fields[_DAT_SET].decode("ascii", errors="replace"),
             go_id=fields[_GO_ID].decode("ascii", errors="replace") if _GO_ID in fields else None,
             timestamp=timestamp,
-            st_num=ber.decode_unsigned(fields[_ST_NUM]),
-            sq_num=ber.decode_unsigned(fields[_SQ_NUM]),
+            st_num=_counter(fields[_ST_NUM], "stNum"),
+            sq_num=_counter(fields[_SQ_NUM], "sqNum"),
             simulation=_lenient_bool(fields.get(_SIMULATION)),
-            conf_rev=ber.decode_unsigned(fields[_CONF_REV]),
+            conf_rev=_counter(fields[_CONF_REV], "confRev"),
             nds_com=_lenient_bool(fields.get(_NDS_COM)),
-            num_dat_set_entries=ber.decode_unsigned(fields[_NUM_ENTRIES]),
+            num_dat_set_entries=_counter(fields[_NUM_ENTRIES], "numDatSetEntries"),
             all_data=decode_data_sequence(fields.get(_ALL_DATA, b"")),
             time_quality=time_quality,
         )
     except ber.BerError as exc:
         raise GooseDecodeError(str(exc)) from exc
+
+
+def _counter(content: bytes, name: str) -> int:
+    """An INT32U header field, read leniently but refused above 64 bits."""
+    value = ber.decode_unsigned(content)
+    if value >> 64:
+        raise GooseDecodeError(f"{name} above 64 bits")
+    return value
 
 
 def _lenient_bool(content: Optional[bytes]) -> bool:

@@ -105,6 +105,19 @@ def test_goose_rejects_missing_mandatory_field() -> None:
         goose.decode_goose_pdu(goose.ber.encode_tlv(0x61, fields))
 
 
+def test_goose_counters_stop_at_64_bits() -> None:
+    apdu = goose.encode_goose_pdu(_goose_pdu())
+    fields = list(goose.ber.iter_tlvs(goose.ber.decode_tlv(apdu).value))
+
+    def with_st_num(content: bytes) -> bytes:
+        return goose.ber.encode_tlv(0x61, b"".join(
+            goose.ber.encode_tlv(t.tag, content if t.tag == 0x85 else t.value) for t in fields))
+
+    assert goose.decode_goose_pdu(with_st_num(bytes(12) + b"\xff" * 8)).st_num == 2**64 - 1
+    with pytest.raises(goose.GooseDecodeError, match="stNum above 64 bits"):
+        goose.decode_goose_pdu(with_st_num(b"\x01" + bytes(8)))
+
+
 def test_goose_rejects_garbage() -> None:
     with pytest.raises(goose.GooseDecodeError):
         goose.decode_goose_pdu(b"\x61\x05\x80\x01")

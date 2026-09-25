@@ -1,8 +1,8 @@
 // Copyright 2026 Florent Carli
 // SPDX-License-Identifier: Apache-2.0
 
-//! GOOSE encoding (IEC 61850-8-1, clause A.3 `IECGoosePdu`), as
-//! `open61850.goose` writes it, octet for octet.
+//! GOOSE (IEC 61850-8-1, clause A.3 `IECGoosePdu`), read as
+//! `open61850.goose` reads it and written as it writes it, octet for octet.
 //!
 //! ```text
 //! IECGoosePdu ::= [APPLICATION 1] IMPLICIT SEQUENCE {
@@ -14,12 +14,16 @@
 //! [`encode_frame`] writes the whole Ethernet frame into the caller's
 //! buffer and returns its length: no allocation, no intermediate copy.
 //! State (stNum, sqNum, t) and retransmission belong to the caller.
+//!
+//! [`decode_pdu`] checks the header fields and the TLV structure of allData
+//! at any depth, then [`Received::values`] reads the values without
+//! allocating.
 
 use core::fmt;
 
-use crate::ber::{BufferFull, Integer, Writer};
+use crate::ber::{self, BerError, BufferFull, Integer, Writer};
 use crate::data::{self, Data, DataError};
-use crate::ethernet::{Address, FrameError, ETHERTYPE_GOOSE};
+use crate::ethernet::{self, Address, Frame, FrameError, Header, ETHERTYPE_GOOSE};
 use crate::time::UtcTime;
 
 pub const TAG_GOOSE_PDU: u32 = 0x61;
@@ -181,6 +185,182 @@ pub fn encode_frame(pdu: &GoosePdu<'_>, address: &Address, out: &mut [u8]) -> Re
     Ok(needed)
 }
 
+// --- decoding -----------------------------------------------------------------
+
+const GOCB_REF: usize = 0;
+const TAL: usize = 1;
+const DAT_SET: usize = 2;
+const GO_ID: usize = 3;
+const T: usize = 4;
+const ST_NUM: usize = 5;
+const SQ_NUM: usize = 6;
+const SIMULATION: usize = 7;
+const CONF_REV: usize = 8;
+const NDS_COM: usize = 9;
+const NUM_ENTRIES: usize = 10;
+const ALL_DATA: usize = 11;
+
+const MANDATORY: [(usize, &str); 8] = [
+    (GOCB_REF, "gocbRef"),
+    (TAL, "timeAllowedtoLive"),
+    (DAT_SET, "datSet"),
+    (T, "t"),
+    (ST_NUM, "stNum"),
+    (SQ_NUM, "sqNum"),
+    (CONF_REV, "confRev"),
+    (NUM_ENTRIES, "numDatSetEntries"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    Ber(BerError),
+    /// The bytes after the EtherType are too short, or their Length is inconsistent.
+    Header,
+    UnexpectedTag(u32),
+    MissingField(&'static str),
+    /// A header counter above 64 bits.
+    TooLarge(&'static str),
+    /// t shorter than 8 octets.
+    Time,
+}
+
+impl From<BerError> for DecodeError {
+    fn from(e: BerError) -> Self {
+        DecodeError::Ber(e)
+    }
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeError::Ber(e) => e.fmt(f),
+            DecodeError::Header => f.write_str("GOOSE header too short or with an inconsistent Length"),
+            DecodeError::UnexpectedTag(tag) => write!(f, "expected tag 0x61, found 0x{tag:X}"),
+            DecodeError::MissingField(name) => write!(f, "missing mandatory GOOSE field {name}"),
+            DecodeError::TooLarge(name) => write!(f, "{name} above 64 bits"),
+            DecodeError::Time => f.write_str("utc-time needs 8 bytes"),
+        }
+    }
+}
+
+/// A checked GOOSE message; strings are raw VisibleString octets.
+///
+/// Counters are INT32U in IEC 61850-8-1; they are read leniently (with or
+/// without the leading `00`) up to 64 bits. `simulation` and `nds_com` are
+/// false when absent. `all_data` holds the allData content, already checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Received<'a> {
+    pub gocb_ref: &'a [u8],
+    pub time_allowed_to_live: u64,
+    pub dat_set: &'a [u8],
+    pub go_id: Option<&'a [u8]>,
+    pub t: UtcTime,
+    pub st_num: u64,
+    pub sq_num: u64,
+    pub simulation: bool,
+    pub conf_rev: u64,
+    pub nds_com: bool,
+    pub num_dat_set_entries: u64,
+    /// Top-level values in allData (numDatSetEntries is not checked against it).
+    pub entries: usize,
+    pub all_data: &'a [u8],
+}
+
+impl<'a> Received<'a> {
+    /// The allData values in preorder (see [`crate::data`]).
+    pub fn values(&self) -> data::Values<'a> {
+        data::iter_sequence(self.all_data)
+    }
+}
+
+/// Number of a tag from its identifier octets at `offset` (class and form
+/// ignored, as `open61850.ber.tag_number` computes it); `u32::MAX` above 32 bits.
+fn tag_number_at(data: &[u8], offset: usize) -> u32 {
+    let Some(&first) = data.get(offset) else { return u32::MAX };
+    if first & 0x1F != 0x1F {
+        return u32::from(first & 0x1F);
+    }
+    let mut number = 0u32;
+    for &b in data.get(offset + 1..).unwrap_or(&[]) {
+        number = if number > u32::MAX >> 7 { u32::MAX } else { (number << 7) | u32::from(b & 0x7F) };
+        if b & 0x80 == 0 {
+            break;
+        }
+    }
+    number
+}
+
+fn counter(content: &[u8], name: &'static str) -> Result<u64, DecodeError> {
+    ber::decode_unsigned(content).map_err(|e| match e {
+        BerError::IntegerTooLarge => DecodeError::TooLarge(name),
+        e => DecodeError::Ber(e),
+    })
+}
+
+fn lenient_bool(content: Option<&[u8]>) -> bool {
+    content.and_then(|c| c.first()).is_some_and(|&b| b != 0)
+}
+
+/// Decode and check an `IECGoosePdu` (the bytes after the 8-byte APPID header).
+///
+/// Fields are found by tag number whatever their class and form; the last
+/// occurrence wins and other numbers are skipped. Bytes after the PDU TLV
+/// are ignored.
+pub fn decode_pdu(apdu: &[u8]) -> Result<Received<'_>, DecodeError> {
+    let outer = ber::decode_tlv(apdu, 0)?;
+    if outer.tag != TAG_GOOSE_PDU {
+        return Err(DecodeError::UnexpectedTag(outer.tag));
+    }
+    let content = outer.value;
+    let mut fields: [Option<&[u8]>; 12] = [None; 12];
+    let mut at = 0;
+    while at < content.len() {
+        let tlv = ber::decode_tlv(content, at)?;
+        if let Some(slot) = fields.get_mut(tag_number_at(content, at) as usize) {
+            *slot = Some(tlv.value);
+        }
+        at = tlv.end;
+    }
+    for (number, name) in MANDATORY {
+        if fields[number].is_none() {
+            return Err(DecodeError::MissingField(name));
+        }
+    }
+    let field = |n: usize| fields[n].unwrap_or(&[]);
+    let all_data = field(ALL_DATA);
+    Ok(Received {
+        gocb_ref: field(GOCB_REF),
+        time_allowed_to_live: counter(field(TAL), "timeAllowedtoLive")?,
+        dat_set: field(DAT_SET),
+        go_id: fields[GO_ID],
+        t: UtcTime::decode(field(T)).ok_or(DecodeError::Time)?,
+        st_num: counter(field(ST_NUM), "stNum")?,
+        sq_num: counter(field(SQ_NUM), "sqNum")?,
+        simulation: lenient_bool(fields[SIMULATION]),
+        conf_rev: counter(field(CONF_REV), "confRev")?,
+        nds_com: lenient_bool(fields[NDS_COM]),
+        num_dat_set_entries: counter(field(NUM_ENTRIES), "numDatSetEntries")?,
+        entries: data::check_sequence(all_data)?,
+        all_data,
+    })
+}
+
+/// Decode from the APPID field, the bytes that follow the EtherType.
+pub fn decode_payload(payload: &[u8]) -> Result<(Header<'_>, Received<'_>), DecodeError> {
+    let header = ethernet::parse_header(payload).ok_or(DecodeError::Header)?;
+    Ok((header, decode_pdu(header.apdu)?))
+}
+
+/// Decode an Ethernet frame; `Ok(None)` when it is not a GOOSE frame (or
+/// its Ethernet or APPID header is truncated), like
+/// `open61850.goose.decode_goose_frame`.
+pub fn decode_frame(raw: &[u8]) -> Result<Option<(Frame<'_>, Received<'_>)>, DecodeError> {
+    match ethernet::parse_frame(raw, &[ETHERTYPE_GOOSE]) {
+        None => Ok(None),
+        Some(frame) => Ok(Some((frame, decode_pdu(frame.header.apdu)?))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +411,33 @@ mod tests {
         assert_eq!(pdu_len(&pdu), Ok(n - 26));
         assert_eq!(encode_pdu(&pdu, &mut buf), Ok(n - 26));
         assert_eq!(&buf[..n - 26], &FRAME[26..]);
+    }
+
+    #[test]
+    fn decodes_what_python_writes() {
+        let (frame, message) = decode_frame(&FRAME).unwrap().unwrap();
+        assert_eq!((frame.vlan_id, frame.header.app_id), (Some(5), 0x1000));
+        assert_eq!((message.gocb_ref, message.go_id, message.st_num), (&b"IED01LD0/LLN0$GO"[..], Some(&b"G1"[..]), 128));
+        assert_eq!(message.t, UtcTime { seconds: 1_767_225_600, fraction: 0x80_0000, quality: 0x0A });
+        assert_eq!(message.entries, 2);
+        let mut values = message.values();
+        assert_eq!(values.next(), Some(Data::Boolean(true)));
+        assert_eq!(values.next(), Some(Data::BitString { bits: &[0, 0], unused: 3 }));
+        assert_eq!(values.next(), None);
+        assert_eq!(decode_payload(&FRAME[18..]).map(|(_, m)| m), Ok(message));
+    }
+
+    #[test]
+    fn refusals() {
+        let mut apdu = [0u8; 72];
+        apdu.copy_from_slice(&FRAME[26..]);
+        let mut no_st_num = apdu;
+        no_st_num[43] = 0x8C; // stNum [5] becomes [12], which is skipped
+        assert_eq!(decode_pdu(&no_st_num), Err(DecodeError::MissingField("stNum")));
+        let mut broken = apdu;
+        // The Quality 84 03 03 00 00 becomes a structure A2 03 whose member 83 05 runs past it.
+        broken[67..72].copy_from_slice(&[0xA2, 0x03, 0x83, 0x05, 0x00]);
+        assert!(matches!(decode_pdu(&broken), Err(DecodeError::Ber(BerError::Truncated { .. }))));
     }
 
     #[test]

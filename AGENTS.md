@@ -20,7 +20,7 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `data.py` | MMS `Data` CHOICE (`BoolData` ... `RawData`), `encode_data` / `decode_data*`, UtcTime and binary-time helpers. `TimestampData.quality` keeps the TimeQuality octet, `FloatData.double` the width; float32 decodes to its shortest decimal. Unsigned values get a leading `00` when the high bit is set. |
 | `display.py` | Readable text of values (positions, octet strings). |
 | `ethernet.py` | Ethernet II / 802.1Q + APPID header: `parse_frame`, `build_frame`, `EthernetFrame`. |
-| `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields. |
+| `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields and on header counters above 64 bits (INT32U, read leniently). |
 | `sv.py` | `SvPDU` / `SvAsdu` with every 9-2 / 61869-9 field (datSet, refrTm, smpRate, smpMod, gmIdentity), PDU and frame codec, INT32+quality sample helpers. `_asdu_fields` has a fast path (22 us per 2-ASDU frame on a Xeon Gold server, 9 us on a recent Mac: `tools/bench_sv_decode.py`). |
 | `quality.py` | `Quality` (7-3, 13-bit bit string) and `TimeQuality` (UtcTime octet) in readable form. |
 | `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances (ldName honoured), ReportControl blocks with their data sets and instance counts, DataSets with FCDA members as `Reference`s, GSEControl / SampledValueControl with their GSE / SMV addresses (APPID and VLAN-ID hexadecimal, MinTime/MaxTime), `GooseControlBlock.goose_control()` for the publisher. `load_model` / `ied_model` build a `ServerModel` from the DataTypeTemplates (DO, SDO, DA, BDA; arrays are leaves; indexed RCBs get their instances); `mms.model.compare` lists the differences. |
@@ -183,12 +183,20 @@ MAC; `Address` writes the header), `time` (UtcTime), `sv` (`decode_pdu`
 checks every ASDU and noASDU, then `asdus()` walks them again;
 `decode_payload` and `decode_frame`; `int32_samples`), `data` (MMS `Data`
 as a flat preorder sequence: `Structure(n)` and `Array(n)` are followed by
-their members, nesting at most 32 deep; `sequence_len` then
-`write_sequence`), `goose` (`encode_pdu`, `encode_frame`: lengths measured
-first, then written once into the buffer; `BufferTooSmall` says how many
-octets are needed; stNum, sqNum, t and retransmission stay with the
-caller). The engine exposes `decode_sv_pdu`, `decode_sv_frame`,
-`encode_goose_pdu` and `encode_goose_frame` to Python for the tests.
+their members; written with `sequence_len` then `write_sequence`, nesting
+at most 32 deep; read with `check_sequence`, which checks every structure
+at any depth without recursion or stack (each structure's members tile it,
+then one pass walks the values in preorder), then `iter_sequence`; an
+INTEGER beyond 64 bits reads as `Raw`), `goose` (`encode_pdu`,
+`encode_frame`: lengths measured first, then written once into the buffer;
+`BufferTooSmall` says how many octets are needed; stNum, sqNum, t and
+retransmission stay with the caller. `decode_pdu`, `decode_payload`,
+`decode_frame` return a `Received`: header fields found by tag number
+whatever their class and form, last occurrence winning, counters up to 64
+bits, allData checked, `values()` to read it). The engine exposes
+`decode_sv_pdu`, `decode_sv_frame`, `encode_goose_pdu`,
+`encode_goose_frame`, `decode_goose_pdu` and `decode_goose_frame` to Python
+for the tests.
 `tests/test_sv_decode_native.py` compares the SV decoder with
 `open61850.sv` on random PDUs and frames, BER forms the encoder never
 writes (long and non-minimal lengths, high tags, unknown, repeated and
@@ -196,10 +204,17 @@ shuffled fields) and byte mutations of each: same refusals, same fields.
 `tests/test_goose_encode_native.py` compares the GOOSE encoder with
 `open61850.goose` on random messages (every Data type, nesting, INTEGER
 and length boundaries, non-ASCII VisibleStrings): same octets, same
-refusals. Docker on the dev Mac (`cargo run --release -p open61850-core
+refusals. `tests/test_goose_decode_native.py` compares the GOOSE decoder
+with `open61850.goose` on encoded messages, PDUs written TLV by TLV in
+forms the encoder never uses (fields of any class, padded high tag numbers,
+repeated and shuffled fields, counters with leading zeros or above 64
+bits, IA5 strings, floats and times of other sizes, INTEGERs beyond 64
+bits, 10 to 80 nested structures) and byte mutations: same refusals, same
+values. Docker on the dev Mac (`cargo run --release -p open61850-core
 --example ...`): the 2-ASDU frame of `tools/bench_sv_decode.py` decodes,
-samples read, in 110 ns (`bench_sv_decode`); a 168-byte trip GOOSE of 10
-entries encodes in 128 ns (`bench_goose_encode`).
+samples read, in about 105 ns (`bench_sv_decode`); a 168-byte trip GOOSE
+of 10 entries encodes in about 130 ns and decodes, values read, in about
+100 ns (`bench_goose`).
 
 Building locally without Rust installed: Docker (`rust:1-slim-bookworm`
 plus `maturin`), or `quay.io/pypa/manylinux2014_x86_64` for an x86_64 wheel.

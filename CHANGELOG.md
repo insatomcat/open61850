@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `open61850-core`, a Rust crate in the `native/` workspace: process bus
+  codecs for real-time callers (`no_std`, no allocation, no unsafe code).
+  Sampled Values decoding, GOOSE encoding and decoding, MMS `Data` values
+  as a flat preorder sequence. Each codec accepts what the Python codec
+  accepts and writes the octets it writes; tests compare them on random and
+  mutated input. A C API is to follow.
+- `goose.decode_goose_pdu` refuses a timeAllowedtoLive, stNum, sqNum,
+  confRev or numDatSetEntries above 64 bits (these are INT32U; leading
+  zeros are still accepted).
+
 ## 0.6.0 (2026-09-25)
 
 - The MMS server executes controls: direct and select-before-operate, normal

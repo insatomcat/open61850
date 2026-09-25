@@ -671,6 +671,71 @@ fn encode_goose_frame<'py>(
     Ok(PyBytes::new(py, &encode_goose(pdu, Some(Address { dst_mac, src_mac, app_id, vlan }))?))
 }
 
+// --- GOOSE decoding (open61850-core), exposed to compare it with open61850.goose ---
+
+/// A value as a tuple: `(kind, ...)`; `f32` carries the IEEE 754 bits.
+fn value_to_py<'py>(py: Python<'py>, value: Data<'_>) -> PyResult<Bound<'py, PyAny>> {
+    let b = |octets: &[u8]| PyBytes::new(py, octets);
+    Ok(match value {
+        Data::Boolean(v) => ("bool", v).into_pyobject(py)?.into_any(),
+        Data::Integer(v) => ("int", v).into_pyobject(py)?.into_any(),
+        Data::Unsigned(v) => ("uint", v).into_pyobject(py)?.into_any(),
+        Data::Float32(v) => ("f32", v.to_bits()).into_pyobject(py)?.into_any(),
+        Data::Float64(v) => ("f64", v).into_pyobject(py)?.into_any(),
+        Data::BitString { bits, unused } => ("bits", b(bits), unused).into_pyobject(py)?.into_any(),
+        Data::OctetString(v) => ("octets", b(v)).into_pyobject(py)?.into_any(),
+        Data::VisibleString(v) => ("visible", b(v)).into_pyobject(py)?.into_any(),
+        Data::MmsString(v) => ("mms", b(v)).into_pyobject(py)?.into_any(),
+        Data::UtcTime(t) => ("utc", b(&t.encode())).into_pyobject(py)?.into_any(),
+        Data::BinaryTime(t) => ("btime", b(&t)).into_pyobject(py)?.into_any(),
+        Data::Structure(n) => ("struct", n).into_pyobject(py)?.into_any(),
+        Data::Array(n) => ("array", n).into_pyobject(py)?.into_any(),
+        Data::Raw { tag, value } => ("raw", tag, b(value)).into_pyobject(py)?.into_any(),
+    })
+}
+
+fn received_to_py<'py>(py: Python<'py>, m: &goose::Received<'_>) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("gocb_ref", PyBytes::new(py, m.gocb_ref))?;
+    d.set_item("time_allowed_to_live", m.time_allowed_to_live)?;
+    d.set_item("dat_set", PyBytes::new(py, m.dat_set))?;
+    d.set_item("go_id", m.go_id.map(|g| PyBytes::new(py, g)))?;
+    d.set_item("t", PyBytes::new(py, &m.t.encode()))?;
+    d.set_item("st_num", m.st_num)?;
+    d.set_item("sq_num", m.sq_num)?;
+    d.set_item("simulation", m.simulation)?;
+    d.set_item("conf_rev", m.conf_rev)?;
+    d.set_item("nds_com", m.nds_com)?;
+    d.set_item("num_dat_set_entries", m.num_dat_set_entries)?;
+    d.set_item("entries", m.entries)?;
+    d.set_item("all_data", m.values().map(|v| value_to_py(py, v)).collect::<PyResult<Vec<_>>>()?)?;
+    Ok(d)
+}
+
+/// The fields of an IECGoosePdu as a dict; ValueError when it is invalid (for tests).
+#[pyfunction]
+fn decode_goose_pdu<'py>(py: Python<'py>, apdu: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+    let m = goose::decode_pdu(apdu).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    received_to_py(py, &m)
+}
+
+/// `None` for a frame that is not GOOSE, else `(frame dict, pdu dict)` (for tests).
+#[pyfunction]
+fn decode_goose_frame<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Option<(Bound<'py, PyDict>, Bound<'py, PyDict>)>> {
+    let Some((frame, m)) = goose::decode_frame(raw).map_err(|e| PyValueError::new_err(e.to_string()))? else {
+        return Ok(None);
+    };
+    let d = PyDict::new(py);
+    d.set_item("dst_mac", PyBytes::new(py, &frame.dst_mac))?;
+    d.set_item("src_mac", PyBytes::new(py, &frame.src_mac))?;
+    d.set_item("vlan_id", frame.vlan_id)?;
+    d.set_item("vlan_priority", frame.vlan_priority)?;
+    d.set_item("app_id", frame.header.app_id)?;
+    d.set_item("reserved1", frame.header.reserved1)?;
+    d.set_item("reserved2", frame.header.reserved2)?;
+    Ok(Some((d, received_to_py(py, &m)?)))
+}
+
 #[pymodule]
 fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
@@ -678,6 +743,8 @@ fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decode_sv_frame, m)?)?;
     m.add_function(wrap_pyfunction!(encode_goose_pdu, m)?)?;
     m.add_function(wrap_pyfunction!(encode_goose_frame, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_goose_pdu, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_goose_frame, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -1,10 +1,11 @@
 // Copyright 2026 Florent Carli
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cost of encoding a trip GOOSE frame with open61850-core: 10 allData
-//! entries (5 booleans, each with its Quality), VLAN tagged.
+//! Cost of encoding, then decoding (values read), a trip GOOSE frame with
+//! open61850-core: 10 allData entries (5 booleans, each with its Quality),
+//! VLAN tagged.
 //!
-//!     cargo run --release -p open61850-core --example bench_goose_encode
+//!     cargo run --release -p open61850-core --example bench_goose
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -51,5 +52,24 @@ fn main() {
         }
         best = best.min(start.elapsed().as_secs_f64() / f64::from(n));
     }
-    println!("{len}-byte trip frame, 10 entries: {:.0} ns/frame", best * 1e9);
+    println!("{len}-byte trip frame, 10 entries: encoded in {:.0} ns", best * 1e9);
+
+    let frame = &buf[..len];
+    let mut best = f64::MAX;
+    for _ in 0..5 {
+        let start = Instant::now();
+        let mut trips = 0u64;
+        for _ in 0..n {
+            let (_, message) = goose::decode_frame(black_box(frame)).unwrap().unwrap();
+            trips += message.st_num;
+            for value in message.values() {
+                if value == Data::Boolean(true) {
+                    trips += 1;
+                }
+            }
+        }
+        black_box(trips);
+        best = best.min(start.elapsed().as_secs_f64() / f64::from(n));
+    }
+    println!("{len}-byte trip frame, 10 entries: decoded in {:.0} ns", best * 1e9);
 }

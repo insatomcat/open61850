@@ -68,5 +68,5 @@ jobs:
       - run: cargo test --manifest-path native/Cargo.toml -p open61850-core
       - run: cargo clippy --manifest-path native/Cargo.toml -p open61850-core --all-targets -- -D warnings
       - run: python -m pip install pytest ./native
-      - run: python -m pytest tests/test_sv_native.py tests/test_sv_decode_native.py tests/test_goose_encode_native.py
+      - run: python -m pytest tests/test_sv_native.py tests/test_sv_decode_native.py tests/test_goose_encode_native.py tests/test_goose_decode_native.py
       - run: sudo "$(which python)" -m pytest -s tests/test_sv_native.py
