@@ -21,6 +21,13 @@ from dataclasses import dataclass
 
 from .data import BitStringData
 
+__all__ = [
+    "VALIDITY",
+    "Quality",
+    "TimeQuality",
+]
+
+
 VALIDITY = ("good", "invalid", "reserved", "questionable")
 _DETAILS = (
     "overflow", "out-of-range", "bad-reference", "oscillatory", "failure",

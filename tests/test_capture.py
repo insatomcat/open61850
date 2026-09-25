@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""iec61850.capture: BPF program and VLAN restoration everywhere, a real AF_PACKET capture on Linux."""
+"""open61850.capture: BPF program and VLAN restoration everywhere, a real AF_PACKET capture on Linux."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from iec61850 import capture
-from iec61850.capture import ethertype_filter, run_filter
+from open61850 import capture
+from open61850.capture import ethertype_filter, run_filter
 
 DST = bytes.fromhex("010ccd010001")
 SRC = bytes.fromhex("020000000001")
@@ -115,80 +115,3 @@ def test_capture_on_loopback() -> None:
         while (got := cap.recv()) is not None:
             received.append(got.data)
         assert received == [frames[2]]
-
-
-@linux_only
-def test_processbus_capture_on_lo() -> None:
-    import threading
-
-    from processbus_capture import ProcessbusCapture
-
-    sender = _raw_sender()
-    mux = ProcessbusCapture("lo")
-    goose: list[bytes] = []
-    sv: list[bytes] = []
-    done = threading.Event()
-
-    def on_goose(_ts: float, raw: bytes) -> None:
-        goose.append(raw)
-
-    def on_sv(_header: object, raw: bytes, _ts: float) -> None:
-        sv.append(raw)
-        done.set()
-
-    unsubscribe_goose = mux.subscribe_goose(on_goose)
-    unsubscribe_sv = mux.subscribe_sv(on_sv)
-    try:
-        deadline = time.time() + 5
-        while mux.stats()["bpf_mode"] != "goose+sv" and time.time() < deadline:
-            time.sleep(0.02)
-        with sender:
-            sender.send(_frame(0x88B8, vlan=305))
-            sender.send(_frame(0x0800))
-            sender.send(_frame(0x88BA, vlan=105))
-            assert done.wait(5)
-        time.sleep(0.1)
-        assert goose == [_frame(0x88B8, vlan=305)] and sv == [_frame(0x88BA, vlan=105)]
-        stats = mux.stats()
-        assert stats["goose_packets"] == 1 and stats["sv_packets"] == 1
-    finally:
-        unsubscribe_sv()
-        unsubscribe_goose()
-
-
-@linux_only
-def test_processbus_capture_lets_sv_through_only_for_an_sv_subscriber() -> None:
-    from processbus_capture import ProcessbusCapture
-
-    sender = _raw_sender()
-    mux = ProcessbusCapture("lo")
-    goose: list[bytes] = []
-    unsubscribe_goose = mux.subscribe_goose(lambda _ts, raw: goose.append(raw))
-
-    def wait_mode(mode: str) -> None:
-        deadline = time.time() + 5
-        while mux.stats()["bpf_mode"] != mode and time.time() < deadline:
-            time.sleep(0.02)
-        assert mux.stats()["bpf_mode"] == mode
-
-    try:
-        with sender:
-            wait_mode("goose")
-            sender.send(_frame(0x88BA, vlan=105))
-            sender.send(_frame(0x88B8, vlan=305))
-            deadline = time.time() + 5
-            while not goose and time.time() < deadline:
-                time.sleep(0.02)
-            assert mux.stats()["packets"] == 1  # the SV frame stayed in the kernel
-
-            sv: list[bytes] = []
-            unsubscribe_sv = mux.subscribe_sv(lambda _h, raw, _ts: sv.append(raw))
-            wait_mode("goose+sv")
-            sender.send(_frame(0x88BA, vlan=105))
-            deadline = time.time() + 5
-            while not sv and time.time() < deadline:
-                time.sleep(0.02)
-            unsubscribe_sv()
-            assert sv == [_frame(0x88BA, vlan=105)]
-    finally:
-        unsubscribe_goose()

@@ -1,0 +1,118 @@
+# open61850: maintainer notes
+
+IEC 61850 in pure Python (Apache 2.0), standard library only, Python 3.10+.
+It grew inside PO, a test and diagnostic platform for a digital substation
+process bus, as `iec61850/`, and moved to its own repository at 0.1.0 with
+its history. PO is its first user. Scope so far: the client side, kept
+simple. Tested against a Schneider VMC7 and an ABB SSC600.
+
+Everything is in English. No em-dash in code, comments, commits or docs.
+Commit messages in English with the DCO `Signed-off-by` trailer.
+
+## Layout
+
+`src/open61850/` (src layout), tests in `tests/` (they add `src` to the path
+through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
+
+| Module | Content |
+|--------|---------|
+| `ber.py` | X.690 primitives: tags as the int of their identifier octets (`0x83`, `0xBF48`), definite lengths, minimal INTEGER, lenient unsigned decode, OBJECT IDENTIFIER, `iter_tlvs`, `expect_tlv`, `BerError`. `decode_tlv` has fast paths for short tags and lengths. |
+| `data.py` | MMS `Data` CHOICE (`BoolData` ... `RawData`), `encode_data` / `decode_data*`, UtcTime and binary-time helpers. `TimestampData.quality` keeps the TimeQuality octet, `FloatData.double` the width; float32 decodes to its shortest decimal. Unsigned values get a leading `00` when the high bit is set. |
+| `display.py` | Readable text of values (positions, octet strings). |
+| `ethernet.py` | Ethernet II / 802.1Q + APPID header: `parse_frame`, `build_frame`, `EthernetFrame`. |
+| `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields. |
+| `sv.py` | `SvPDU` / `SvAsdu` with every 9-2 / 61869-9 field (datSet, refrTm, smpRate, smpMod, gmIdentity), PDU and frame codec, INT32+quality sample helpers. `_asdu_fields` has a fast path (22 us per 2-ASDU frame on a Xeon Gold server, 9 us on a recent Mac: `tools/bench_sv_decode.py`). |
+| `quality.py` | `Quality` (7-3, 13-bit bit string) and `TimeQuality` (UtcTime octet) in readable form. |
+| `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances, ReportControl blocks with their data sets and instance counts. |
+| `capture.py` | Linux capture without libpcap: `PacketCapture` reads an AF_PACKET TPACKET_V3 ring (mmap, one poll per block), classic BPF on ethertypes that works with or without a stripped tag, 802.1Q tag put back from the ring header, kernel timestamps, promiscuous membership, `PACKET_STATISTICS` drops. |
+| `mms/transport.py` | TPKT + COTP class 0: `IsoConnection` (CR/CC, segmentation on send, EOT reassembly on receive, DR = closed). |
+| `mms/association.py` | Association request built from `AssociationParameters` (Session CONNECT, Presentation CP-type, ACSE AARQ, MMS initiate-RequestPDU) and `decode_association_response` (ACCEPT/CPA/AARE/initiate-ResponsePDU to an `Association`; refusal at any layer raises `AssociationError`). The defaults give the 180 bytes PO replayed from a capture before the encoder existed; a test pins them. |
+| `mms/pdu.py` | Session/presentation envelope (`wrap`/`unwrap`), `ObjectName`, Read / Write / GetNameList / GetVariableAccessAttributes / GetNamedVariableListAttributes requests and responses, confirmed-Error, Reject, informationReport. Requests match IEDscout captures. |
+| `mms/client.py` | `MmsClient`: one receive thread, responses matched by invokeID (several requests in flight, from any thread, up to the negotiated `max_outstanding_calling`), informationReports to a callback and to listeners on the receive thread, typed errors (`DataAccessError`, `ServiceError`, `MmsReject`, `MmsTimeout`, `MmsConnectionError`). |
+| `mms/report.py` | Report decoding driven by the report's own OptFlds and inclusion bit string (data references, ConfRev, segmentation, reason codes); `OptFlds` / `TrgOps` / `ReasonCode` flag classes. |
+| `mms/types.py` | GetVariableAccessAttributes type descriptions (`StructureType`, `ArrayType`, `PrimitiveType`) and `label()`, which names every leaf of a value after its type (`cVal.mag.f`). |
+| `mms/rcb.py` | RCB status (RptEna, Resv/ResvTms, Owner, RptID, DatSet), `usable` / `find_free` among instances (`group_instances` strips the trailing number): free ones first, then the ones our own address reserved without enabling; `enable` reserves a BRCB with ResvTms first (the VMC7 refuses configuration writes otherwise; edition 1 BRCBs have no ResvTms), then typed, checked writes; `disable` also releases (ResvTms = 0 or Resv = FALSE). |
+| `mms/control.py` | `operate()`: ctlModel read from `CF`, then Oper (direct), SBO read + Oper, or SBOw + Oper; enhanced security waits for the CommandTermination. Refusals raise `ControlError` with the `LastApplError` (AddCause names per 7-2 Ed2). `Origin` defaults to station-control (orCat 2). Report listeners carry the LastApplError / termination to the waiting call. |
+| `mms/__main__.py` | The `open61850-mms` command line. |
+
+Public API: each module's `__all__` (the `mms` package re-exports the usual
+names). Only `mms` and `capture` do I/O; the library configures no logging
+and imports nothing outside the standard library (a test checks it).
+
+## MMS on the wire
+
+Every confirmed request after the association is built as:
+
+```
+01 00 01 00                 Session: Give-Tokens + Data-Transfer SPDUs (fixed)
+61 L  30 L                  Presentation: fully-encoded-data, PDV-list
+      02 01 03              presentation-context-identifier = 3 (MMS context)
+      a0 L                  single-ASN1-type
+         a0 L               MMS confirmed-RequestPDU
+            02 02 xx xx     invokeID
+            a4|a5|a1 ...    read | write | getNameList
+```
+
+Only the association uses the full Session, Presentation and ACSE layers.
+Answers to the default request (`tests/data/association_responses.json`): a
+VMC7 accepts 5 outstanding requests and nesting level 7, an ABB SSC600 only 1
+outstanding request and nesting level 5, so a client that pipelines must
+honour the negotiated value.
+
+GetNameList follows ISO 9506 and matches IEDscout byte for byte:
+`a1 { a0 { 80 01 <class> } a1 { 80 00 | 81 <domain> } [82 <continueAfter>] }`.
+Names come in pages followed with continueAfter (the VMC7 answers 100 names
+per page); only `<LN>$BR|RP$<name>` are blocks. Responses above ~1 KB arrive
+in several COTP DT segments, joined until the EOT bit.
+
+What IEDscout captures on a VMC7 taught (fixtures in `tests/data/iedscout_*.json`):
+- IEDscout pipelines requests, so responses must be matched by invokeID.
+- A confirmed-ErrorPDU carries its invokeID as `80 ..` ([0] IMPLICIT), where
+  requests and responses use `02 ..`.
+- IEDscout's own Initiate is 204 bytes, ours 180; both are accepted.
+- IEDscout enables a BRCB with RptEna=FALSE, a read of the whole block,
+  ResvTms=42, RptEna=TRUE: it keeps the IED's TrgOps/OptFlds and does not
+  purge, so ~500 buffered reports arrive at once.
+- Data-change reports include 1 to 3 of 19 members: partial inclusion is the
+  normal case once dchg/qchg are enabled.
+- Control is direct-with-enhanced-security: one Oper write per command
+  (ctlVal TRUE = close, FALSE = open, orCat 2, Check c0), write response in
+  ~2 ms, then a CommandTermination (informationReport on `...$CO$Pos$Oper`
+  echoing the Oper) 60 to 90 ms later. Checked with `operate()` on a
+  simulated breaker: open then close, termination after 65 and 86 ms.
+- BOOLEAN TRUE goes out as `ff` (DER) where IEDscout sends `01`; the VMC7
+  accepts both.
+
+VMC7 reservations: a BRCB reserved with ResvTms = 5 stays reserved, with
+Owner = the client IP, as long as any association from that IP is alive. A
+client that restarts and reconnects within a second therefore leaks its
+instances unless it releases them (`rcb.disable`) or reclaims its own
+(`usable(..., reclaim_own=True)`).
+
+`rcb.enable` writes in this order, each write checked: ResvTms, IntgPd,
+TrgOps, OptFlds, PurgeBuf, EntryID=0, RptEna, then GI.
+
+## Capture
+
+Linux only (AF_PACKET), root or `CAP_NET_RAW`. It replaced pcapy in PO after
+a side-by-side check on a real process bus, 10 s: the same 152,633 frames
+byte for byte (tags included), timestamps within 1.2 us, no drops; CPU
+2.1 us/frame against 1.4 us for pcapy. A first version with one `recvmsg`
+per frame cost 30 us/frame: keep the ring. With libpcap, the `vlan` keyword
+shifted the offsets of every later test (across `or` too) and let only the
+host's own SV streams through on a NIC that strips tags; `ethertype_filter`
+checks both positions instead. On `lo` every frame shows up twice
+(`PACKET_OUTGOING`): pass `outgoing=False`.
+
+## Tests
+
+`python -m pytest`. Golden bytes come from IED captures (IEDscout), round
+trips, and a fake IED on a socketpair for the client. The AF_PACKET tests
+need Linux and root (`sudo python -m pytest tests/test_capture.py`; CI does
+it). Golden bytes changing means the wire format changed: check it against
+a capture before updating them. Captures stay out of git; only the few
+bytes a test needs go to `tests/data/`.
+
+No infrastructure details in git: no host names, lab addresses, IED
+instance names or stream names of a real site. Use `IED01_...` and
+`192.0.2.x` (RFC 5737).

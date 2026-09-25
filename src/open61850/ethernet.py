@@ -18,6 +18,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+__all__ = [
+    "ETHERTYPE_VLAN",
+    "ETHERTYPE_GOOSE",
+    "ETHERTYPE_GSE_MGMT",
+    "ETHERTYPE_SV",
+    "mac_to_bytes",
+    "mac_to_str",
+    "EthernetFrame",
+    "parse_frame",
+    "build_frame",
+]
+
+
 ETHERTYPE_VLAN = 0x8100
 ETHERTYPE_GOOSE = 0x88B8
 ETHERTYPE_GSE_MGMT = 0x88B9

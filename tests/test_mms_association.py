@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""iec61850.mms.association: the association request and the server's answer."""
+"""open61850.mms.association: the association request and the server's answer."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import json
 import pytest
 from conftest import DATA_DIR
 
-from iec61850 import ber
-from iec61850.mms import MmsProtocolError
-from iec61850.mms.association import (
+from open61850 import ber
+from open61850.mms import MmsProtocolError
+from open61850.mms.association import (
     AssociationError,
     AssociationParameters,
     aarq,

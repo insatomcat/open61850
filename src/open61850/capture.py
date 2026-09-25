@@ -40,6 +40,16 @@ from typing import NamedTuple, Optional
 
 from .ethernet import ETHERTYPE_GOOSE, ETHERTYPE_SV, ETHERTYPE_VLAN
 
+__all__ = [
+    "CapturedFrame",
+    "CaptureStats",
+    "ethertype_filter",
+    "run_filter",
+    "read_block",
+    "PacketCapture",
+]
+
+
 ETH_P_ALL = 0x0003
 SOL_PACKET = 263
 PACKET_ADD_MEMBERSHIP = 1

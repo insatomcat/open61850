@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for iec61850.mms: PDUs against IEDscout captures, reports, client and RCBs."""
+"""Unit tests for open61850.mms: PDUs against IEDscout captures, reports, client and RCBs."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from typing import Optional
 import pytest
 from conftest import DATA_DIR
 
-from iec61850 import ber
-from iec61850.data import (
+from open61850 import ber
+from open61850.data import (
     BitStringData,
     BoolData,
     IECData,
@@ -29,7 +29,7 @@ from iec61850.data import (
     VisibleStringData,
     encode_data,
 )
-from iec61850.mms import (
+from open61850.mms import (
     OBJECT_CLASS_DOMAIN,
     DataAccessError,
     InformationReport,
@@ -48,7 +48,7 @@ from iec61850.mms import (
     rcb,
     transport,
 )
-from iec61850.mms.report import ReportDecodeError, bits_of, bitstring_of
+from open61850.mms.report import ReportDecodeError, bits_of, bitstring_of
 
 SERVICES = json.loads((DATA_DIR / "iedscout_services.json").read_text())
 NAMES = json.loads((DATA_DIR / "iedscout_getnamelist.json").read_text())
@@ -419,7 +419,7 @@ class FakeModel:
         elif service == pdu.SERVICE_WRITE:
             spec, data = list(ber.iter_tlvs(content))[:2]
             name = pdu._decode_variable_list(spec.value)[0].item
-            from iec61850.data import decode_data_sequence
+            from open61850.data import decode_data_sequence
 
             (value,) = decode_data_sequence(data.value)
             if name.rsplit("$", 1)[1] in self.refuse:

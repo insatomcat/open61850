@@ -2,7 +2,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cost of decoding SV frames with iec61850.sv, as the SV listener does it.
+"""Cost of decoding SV frames with open61850.sv, as the SV listener does it.
 
     python3 tools/bench_sv_decode.py [--asdus 2] [--rate 2400]
 
@@ -20,9 +20,9 @@ import sys
 import timeit
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from iec61850.sv import SvAsdu, SvPDU, decode_sv_frame, encode_sv_frame  # noqa: E402
+from open61850.sv import SvAsdu, SvPDU, decode_sv_frame, encode_sv_frame  # noqa: E402
 
 
 def main() -> int:

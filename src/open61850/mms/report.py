@@ -23,6 +23,20 @@ from ..data import BitStringData, BoolData, IECData, IntData, OctetStringData, T
 from .errors import DataAccessError, MmsProtocolError
 from .pdu import InformationReport
 
+__all__ = [
+    "bits_of",
+    "bitstring_of",
+    "OptFlds",
+    "TrgOps",
+    "ReasonCode",
+    "ReportEntry",
+    "Report",
+    "ReportDecodeError",
+    "is_report",
+    "decode_report",
+]
+
+
 
 def bits_of(value: BitStringData) -> list[bool]:
     """The bits of a bit string, first bit first."""

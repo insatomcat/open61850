@@ -34,6 +34,20 @@ from .. import ber
 from ..data import ArrayData, IECData, StructureData
 from .errors import MmsProtocolError
 
+__all__ = [
+    "PRIMITIVES",
+    "PrimitiveType",
+    "StructureType",
+    "ArrayType",
+    "NamedType",
+    "MmsType",
+    "decode_type_description",
+    "decode_type_specification",
+    "get_variable_access_attributes_response",
+    "label",
+]
+
+
 PRIMITIVES = {
     3: "boolean", 4: "bit-string", 5: "integer", 6: "unsigned", 7: "float",
     9: "octet-string", 10: "visible-string", 11: "generalized-time", 12: "binary-time",

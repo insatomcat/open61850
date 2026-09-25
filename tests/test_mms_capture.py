@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""iec61850.mms on real traffic: IEDscout subscribed to a BRCB and operated a breaker.
+"""open61850.mms on real traffic: IEDscout subscribed to a BRCB and operated a breaker.
 
 In that capture IEDscout enabled the block with only two writes (ResvTms = 42
 then RptEna = TRUE), keeping the IED's TrgOps and OptFlds, and operated the
@@ -15,9 +15,9 @@ import json
 
 from conftest import DATA_DIR
 
-from iec61850 import ber
-from iec61850.data import BitStringData, BoolData, IntData, OctetStringData, StructureData, TimestampData, UIntData, decode_data_sequence
-from iec61850.mms import InformationReport, ObjectName, OptFlds, ReasonCode, decode_report, is_report, pdu
+from open61850 import ber
+from open61850.data import BitStringData, BoolData, IntData, OctetStringData, StructureData, TimestampData, UIntData, decode_data_sequence
+from open61850.mms import InformationReport, ObjectName, OptFlds, ReasonCode, decode_report, is_report, pdu
 
 CAPTURE = json.loads((DATA_DIR / "iedscout_reports_control.json").read_text())
 OPER = ObjectName("CBCSWI1$CO$Pos$Oper", "IED01_BayLD")

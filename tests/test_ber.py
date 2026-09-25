@@ -1,13 +1,13 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for iec61850.ber."""
+"""Unit tests for open61850.ber."""
 
 from __future__ import annotations
 
 import pytest
 
-from iec61850 import ber
+from open61850 import ber
 
 
 @pytest.mark.parametrize(

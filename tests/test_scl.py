@@ -1,15 +1,15 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""iec61850.scl: IEDs, addresses and report control blocks of an SCL file."""
+"""open61850.scl: IEDs, addresses and report control blocks of an SCL file."""
 
 from __future__ import annotations
 
 import pytest
 from conftest import DATA_DIR
 
-from iec61850 import scl
-from iec61850.mms import ObjectName
+from open61850 import scl
+from open61850.mms import ObjectName
 
 SCD = DATA_DIR / "two_ieds.scd.xml"
 

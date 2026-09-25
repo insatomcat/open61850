@@ -21,6 +21,22 @@ from .errors import DataAccessError, MmsError
 from .pdu import ObjectName
 from .report import OptFlds, TrgOps
 
+__all__ = [
+    "RcbError",
+    "is_rcb_name",
+    "is_buffered",
+    "instance_base",
+    "group_instances",
+    "RcbStatus",
+    "read_status",
+    "usable",
+    "find_free",
+    "RcbSettings",
+    "enable",
+    "disable",
+]
+
+
 
 class RcbError(MmsError):
     """Writing an attribute of a report control block failed."""
@@ -47,7 +63,7 @@ def instance_base(item: str) -> str:
 
     ``..._DQPO03`` -> ``..._DQPO``, ``..._DQPO_DEP102`` -> ``..._DQPO_DEP1``.
     A block that is not indexed but whose name ends with two digits would be
-    cut too; the SCL (``iec61850.scl``) gives the exact names.
+    cut too; the SCL (``open61850.scl``) gives the exact names.
     """
     return re.sub(r"\d{2}$", "", item)
 

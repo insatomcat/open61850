@@ -10,19 +10,19 @@ from datetime import datetime, timezone
 
 from conftest import DATA_DIR
 
-from iec61850 import ber
-from iec61850.data import BitStringData, BoolData, FloatData, IntData, StructureData, TimestampData
-from iec61850.mms import ObjectName, pdu
-from iec61850.mms.types import (
+from open61850 import ber
+from open61850.data import BitStringData, BoolData, FloatData, IntData, StructureData, TimestampData
+from open61850.mms import ObjectName, pdu
+from open61850.mms.types import (
     PrimitiveType,
     StructureType,
     decode_type_description,
     get_variable_access_attributes_response,
     label,
 )
-from iec61850.quality import Quality, TimeQuality
+from open61850.quality import Quality, TimeQuality
 
-from iec61850.display import format_value
+from open61850.display import format_value
 
 SERVICES = json.loads((DATA_DIR / "iedscout_services.json").read_text())
 
@@ -104,8 +104,8 @@ def test_format_value() -> None:
 
 
 def test_format_positions_and_octet_strings() -> None:
-    from iec61850.data import OctetStringData
-    from iec61850.display import format_leaf
+    from open61850.data import OctetStringData
+    from open61850.display import format_leaf
 
     assert format_leaf("stVal", BitStringData(b"\x80", 6)) == "on"
     assert format_leaf("stVal", BitStringData(b"\x40", 6)) == "off"

@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for iec61850.ethernet, iec61850.goose and iec61850.sv."""
+"""Unit tests for open61850.ethernet, open61850.goose and open61850.sv."""
 
 from __future__ import annotations
 
@@ -11,18 +11,24 @@ from datetime import datetime, timezone
 
 import pytest
 from conftest import ROOT
-from test_sv import _asdu, _seq_data_6i3u, _sv_payload
 
-from iec61850 import ethernet, goose, sv
-from iec61850.data import BoolData, UIntData
-from parse_ref_pkt import REF
+from open61850 import ethernet, goose, sv
+from open61850.data import BoolData, UIntData
+
+# A 9-2LE style frame without its Ethernet header: 8-byte SV header, savPdu
+# with 2 ASDUs (svID IED01_MU01_SV1, smpCnt 0x11B8 and 0x11B9, confRev 10000,
+# smpSynch 2) and 64 bytes of zero samples each.
+_ASDU = "305f800e" + b"IED01_MU01_SV1".hex() + "8202{:04x}8304000027108501028740" + "00" * 64
+REF = bytes.fromhex("403000d3000000006081c8800102a281c2" + _ASDU.format(0x11B8) + _ASDU.format(0x11B9) + "00")
 
 
 def test_library_imports_without_optional_dependencies() -> None:
     code = (
         "import sys\n"
-        "import iec61850.ber, iec61850.data, iec61850.ethernet, iec61850.goose, iec61850.sv\n"
-        "import iec61850.quality, iec61850.mms, iec61850.mms.rcb, iec61850.mms.types\n"
+        "sys.path.insert(0, 'src')\n"
+        "import open61850.ber, open61850.data, open61850.ethernet, open61850.goose, open61850.sv\n"
+        "import open61850.quality, open61850.scl, open61850.display, open61850.capture\n"
+        "import open61850.mms, open61850.mms.rcb, open61850.mms.types, open61850.mms.control\n"
         "bad = {'scapy', 'pcapy', 'fastapi', 'flask'} & set(sys.modules)\n"
         "assert not bad, bad\n"
     )
@@ -120,24 +126,10 @@ def test_sv_reference_packet() -> None:
     assert sv.decode_int32_samples(pdu.asdus[0].sample) == [(0, 0)] * 8
 
 
-def test_sv_encoder_matches_rt_sender_layout() -> None:
-    samples = [(1000, 0), (-500, 0x2000), (-500, 0), (0, 0), (0, 0), (0, 0), (10000, 0), (-5000, 0), (-5000, 0)]
-    asdus = [
-        sv.SvAsdu(sv_id="SV_1", smp_cnt=n, conf_rev=10000, smp_synch=2, sample=sv.encode_int32_samples(samples))
-        for n in (0, 1)
-    ]
-    expected = _sv_payload(0x4060, [_asdu("SV_1", n, 10000, 2, sv.encode_int32_samples(samples)) for n in (0, 1)])
-    raw = sv.encode_sv_frame(sv.SvPDU(asdus), dst_mac="01:0c:cd:04:00:01", src_mac="00:00:00:00:00:01", app_id=0x4060)
-    assert raw[14:] == expected
-    frame, pdu = sv.decode_sv_frame(raw)  # type: ignore[misc]
-    assert pdu.asdus == asdus
-    assert sv.decode_int32_samples(pdu.asdus[0].sample)[1] == (-500, 0x2000)
-
-
 def test_sv_optional_fields_round_trip() -> None:
     asdu = sv.SvAsdu(
         sv_id="MU01", dat_set="MU01LD0/LLN0$PhsMeas1", smp_cnt=3999, conf_rev=1, smp_synch=sv.SMP_SYNCH_GLOBAL,
-        sample=_seq_data_6i3u([0] * 9), refr_tm=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sample=sv.encode_int32_samples([(0, 0)] * 9), refr_tm=datetime(2026, 1, 1, tzinfo=timezone.utc),
         smp_rate=4000, smp_mod=0, gm_identity=bytes(range(8)),
     )
     assert sv.decode_sv_pdu(sv.encode_sv_pdu(sv.SvPDU([asdu]))).asdus == [asdu]

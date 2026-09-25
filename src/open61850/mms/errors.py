@@ -5,6 +5,19 @@
 
 from __future__ import annotations
 
+__all__ = [
+    "DATA_ACCESS_ERRORS",
+    "ERROR_CLASSES",
+    "MmsError",
+    "MmsConnectionError",
+    "MmsTimeout",
+    "MmsProtocolError",
+    "DataAccessError",
+    "ServiceError",
+    "MmsReject",
+]
+
+
 DATA_ACCESS_ERRORS = {
     0: "object-invalidated",
     1: "hardware-fault",

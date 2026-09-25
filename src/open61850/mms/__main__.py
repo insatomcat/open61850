@@ -1,16 +1,15 @@
-#!/usr/bin/env python3
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command-line MMS client built on iec61850.mms.
+"""Command-line MMS client (``open61850-mms`` or ``python -m open61850.mms``).
 
-    python3 tools/mms_client.py HOST[:PORT] association
-    python3 tools/mms_client.py HOST[:PORT] domains
-    python3 tools/mms_client.py HOST[:PORT] rcbs [--status]
-    python3 tools/mms_client.py HOST[:PORT] read DOMAIN/ITEM [DOMAIN/ITEM ...]
-    python3 tools/mms_client.py HOST[:PORT] dataset DOMAIN/LLN0$DSNAME
-    python3 tools/mms_client.py HOST[:PORT] subscribe DOMAIN/LLN0$BR$NAME [--integrity-ms 2000]
-    python3 tools/mms_client.py HOST[:PORT] operate DOMAIN/LN$CO$DO open|close|true|false|NUMBER
+    open61850-mms HOST[:PORT] association
+    open61850-mms HOST[:PORT] domains
+    open61850-mms HOST[:PORT] rcbs [--status]
+    open61850-mms HOST[:PORT] read DOMAIN/ITEM [DOMAIN/ITEM ...]
+    open61850-mms HOST[:PORT] dataset DOMAIN/LLN0$DSNAME
+    open61850-mms HOST[:PORT] subscribe DOMAIN/LLN0$BR$NAME [--integrity-ms 2000]
+    open61850-mms HOST[:PORT] operate DOMAIN/LN$CO$DO open|close|true|false|NUMBER
 
 ``subscribe`` takes a block or the name of a group without its instance
 number (``IED01_LD0/LLN0$BR$CB_LDPHAS1_DQPO``): it picks a free instance,
@@ -28,13 +27,10 @@ from __future__ import annotations
 import argparse
 import queue
 import sys
-from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from iec61850.display import format_value  # noqa: E402
-from iec61850.mms import (  # noqa: E402
+from open61850.display import format_value
+from open61850.mms import (
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
     InformationReport,

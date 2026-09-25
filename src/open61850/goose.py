@@ -31,6 +31,17 @@ from typing import Optional
 from . import ber, ethernet
 from .data import DATA_TYPES, IECData, decode_data_sequence, decode_utc_time, encode_data, encode_utc_time
 
+__all__ = [
+    "TAG_GOOSE_PDU",
+    "GooseDecodeError",
+    "GoosePDU",
+    "decode_goose_pdu",
+    "encode_goose_pdu",
+    "encode_goose_frame",
+    "decode_goose_frame",
+]
+
+
 TAG_GOOSE_PDU = 0x61
 
 _GOCB_REF = 0

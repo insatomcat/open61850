@@ -1,0 +1,44 @@
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open61850"
+dynamic = ["version"]
+description = "IEC 61850 in pure Python: MMS client, GOOSE, Sampled Values, SCL, BER."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Florent Carli" }]
+keywords = ["iec61850", "mms", "goose", "sampled-values", "substation", "scl"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/insatomcat/open61850"
+Issues = "https://github.com/insatomcat/open61850/issues"
+
+[project.scripts]
+open61850-mms = "open61850.mms.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "open61850.__version__" }
+
+[tool.setuptools.package-data]
+open61850 = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

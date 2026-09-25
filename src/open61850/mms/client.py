@@ -42,6 +42,12 @@ from .pdu import InformationReport, ObjectName
 from .types import MmsType, get_variable_access_attributes_response
 from .transport import IsoConnection
 
+__all__ = [
+    "InformationReportCallback",
+    "MmsClient",
+]
+
+
 InformationReportCallback = Callable[[InformationReport], None]
 
 

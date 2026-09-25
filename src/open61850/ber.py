@@ -14,6 +14,36 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import NamedTuple
 
+__all__ = [
+    "BerError",
+    "Tlv",
+    "CLASS_UNIVERSAL",
+    "CLASS_APPLICATION",
+    "CLASS_CONTEXT",
+    "CLASS_PRIVATE",
+    "CONSTRUCTED",
+    "make_tag",
+    "tag_number",
+    "is_constructed",
+    "encode_tag",
+    "decode_tag",
+    "encode_length",
+    "decode_length",
+    "encode_tlv",
+    "decode_tlv",
+    "iter_tlvs",
+    "expect_tlv",
+    "encode_integer",
+    "encode_unsigned",
+    "decode_integer",
+    "decode_unsigned",
+    "encode_boolean",
+    "decode_boolean",
+    "encode_oid",
+    "decode_oid",
+]
+
+
 
 class BerError(ValueError):
     """Malformed or truncated BER data."""

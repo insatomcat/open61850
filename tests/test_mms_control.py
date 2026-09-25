@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""iec61850.mms.control: Oper encoding checked on a capture, control models against a fake IED."""
+"""open61850.mms.control: Oper encoding checked on a capture, control models against a fake IED."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from typing import Optional
 
 import pytest
 from conftest import DATA_DIR
-from test_lib_mms import FakeModel, FakeServer, serve  # noqa: F401 - fixture
+from test_mms import FakeModel, FakeServer, serve  # noqa: F401 - fixture
 
-from iec61850 import ber
-from iec61850.data import (
+from open61850 import ber
+from open61850.data import (
     BoolData,
     IECData,
     IntData,
@@ -26,9 +26,9 @@ from iec61850.data import (
     decode_data_sequence,
     encode_data,
 )
-from iec61850.mms import MmsClient, ObjectName, pdu
-from iec61850.mms import control
-from iec61850.mms.control import ControlError, LastApplError, Origin, operate
+from open61850.mms import MmsClient, ObjectName, pdu
+from open61850.mms import control
+from open61850.mms.control import ControlError, LastApplError, Origin, operate
 
 CAPTURE = json.loads((DATA_DIR / "iedscout_reports_control.json").read_text())
 LD = "IED01_BayLD"
