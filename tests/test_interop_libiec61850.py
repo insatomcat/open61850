@@ -270,3 +270,50 @@ def test_libiec61850_subscribes_to_our_goose() -> None:
     assert all(valid for valid, _data, _ttl in first.values())
     assert first[(1, 0)][1] == "{1.500000,false}" and first[(2, 0)][1] == "{-2.250000,true}"
     assert [first[(2, n)][2] for n in range(4)] == [60, 120, 240, 480]
+
+
+SCL_DIR = "/usr/local/share/libiec61850"
+
+
+@pytest.mark.parametrize("cid, port", [("simpleIO_direct_control.cid", BASIC_IO), ("simpleIO_control_tests.cid", CONTROL)])
+def test_scl_model_matches_the_server(basic_io, control_server, cid: str, port: int) -> None:
+    from open61850.mms.model import compare
+    from open61850.scl import load_model
+
+    expected = load_model(f"{SCL_DIR}/{cid}")
+    with MmsClient.connect("127.0.0.1", port) as client:
+        live = discover(client)
+    assert compare(expected, live) == []
+    assert sum(len(n.references()) for n in live.logical_nodes()) > 100
+
+
+def test_scl_goose_and_sv_blocks() -> None:
+    from open61850.scl import load_ieds
+
+    (ied,) = load_ieds(f"{SCL_DIR}/simpleIO_direct_control_goose.cid")
+    analog = next(g for g in ied.goose_controls if g.name == "gcbAnalogValues")
+    control = analog.goose_control("02:00:00:00:00:01")
+    # what server_example_goose sends (test_goose_publisher_supervised): APPID 0x1000, confRev 2
+    assert (control.gocb_ref, control.app_id, control.conf_rev, control.go_id) == (
+        f"{LD}/LLN0$GO$gcbAnalogValues", 0x1000, 2, "analog")
+    assert (control.dst_mac, control.vlan_id, control.vlan_priority) == ("01:0c:cd:01:00:01", 1, 4)
+    events = next(g for g in ied.goose_controls if g.name == "gcbEvents")
+    assert (events.address.min_time_ms, events.address.max_time_ms) == (1000, 3000)
+    (mu,) = load_ieds(f"{SCL_DIR}/sv.icd")
+    (msvcb,) = mu.sv_controls
+    assert (msvcb.sv_id, msvcb.smp_rate, msvcb.smp_mod, msvcb.samples_per_second(50)) == ("xxxxMUnn01", 80, "SmpPerPeriod", 4000)
+    assert msvcb.address.app_id == 0x1001  # "1001" in the file: hexadecimal
+
+
+def test_compare_scl_command_line(basic_io) -> None:
+    run = subprocess.run(
+        [sys.executable, "-m", "open61850.mms", f"127.0.0.1:{BASIC_IO}", "compare-scl", f"{SCL_DIR}/simpleIO_direct_control.cid"],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.startswith("0 differences (1 logical devices, 106 attributes")
+    run = subprocess.run(  # the control example's SCL against the basic I/O server: they differ
+        [sys.executable, "-m", "open61850.mms", f"127.0.0.1:{BASIC_IO}", "compare-scl", f"{SCL_DIR}/simpleIO_control_tests.cid"],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": "src"},
+    )
+    assert run.returncode == 1 and "missing attribute" in run.stdout

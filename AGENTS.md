@@ -23,7 +23,7 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields. |
 | `sv.py` | `SvPDU` / `SvAsdu` with every 9-2 / 61869-9 field (datSet, refrTm, smpRate, smpMod, gmIdentity), PDU and frame codec, INT32+quality sample helpers. `_asdu_fields` has a fast path (22 us per 2-ASDU frame on a Xeon Gold server, 9 us on a recent Mac: `tools/bench_sv_decode.py`). |
 | `quality.py` | `Quality` (7-3, 13-bit bit string) and `TimeQuality` (UtcTime octet) in readable form. |
-| `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances, ReportControl blocks with their data sets and instance counts. |
+| `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances (ldName honoured), ReportControl blocks with their data sets and instance counts, DataSets with FCDA members as `Reference`s, GSEControl / SampledValueControl with their GSE / SMV addresses (APPID and VLAN-ID hexadecimal, MinTime/MaxTime), `GooseControlBlock.goose_control()` for the publisher. `load_model` / `ied_model` build a `ServerModel` from the DataTypeTemplates (DO, SDO, DA, BDA; arrays are leaves; indexed RCBs get their instances); `mms.model.compare` lists the differences. |
 | `pcap.py` | pcap (micro and nanosecond, both byte orders) and pcapng (sections, `if_tsresol`, `if_tsoffset`, EPB direction flag, SPB, obsolete PB) read as `CapturedFrame`; Ethernet only. `PcapWriter`: classic pcap, nanoseconds. Checked against editcap 4.0.17 output (`tests/data/editcap_pcapng.json`), and tshark reads what the writer produces. |
 | `supervision.py` | `GooseSupervisor` / `SvSupervisor`: state only, fed with decoded messages and a time, return `Event`s (`EventKind`); `check(now)` for timeouts. `BusSupervisor` takes raw frames and counts malformed ones; `open61850-supervise` runs it on files or live. See below. |
 | `capture.py` | Linux capture without libpcap: `PacketCapture` reads an AF_PACKET TPACKET_V3 ring (mmap, one poll per block), classic BPF on ethertypes that works with or without a stripped tag, 802.1Q tag put back from the ring header, kernel timestamps, promiscuous membership, `PACKET_STATISTICS` drops. |
@@ -113,7 +113,10 @@ controls with normal and enhanced security (and a refused one with its
 LastApplError), GOOSE (two GoCBs, supervised without anomaly), SV, and
 libiec61850's GOOSE subscriber reading our GoosePublisher (every message
 valid, values and TAL as sent). On `lo` each frame arrives twice and
-libiec61850 flags the second copy (same sqNum) INVALID. What
+libiec61850 flags the second copy (same sqNum) INVALID. The model built
+from each example's CID matches the one its server exposes, with no
+difference (106 attributes for basic_io), and the GSE/SMV addresses of the
+CIDs are those the publishers send (APPID `1000` in SCL is 0x1000). What
 the examples taught: libiec61850 lists names in alphabetical order (FC CF
 before ST), and its GOOSE example updates its values every second.
 

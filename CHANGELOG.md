@@ -28,6 +28,11 @@
   scheme (min time doubling up to max time, TAL three times the wait);
   `open61850-goose` publishes from the command line. libiec61850's GOOSE
   subscriber reads it in the interoperability tests.
+- `open61850.scl`: data sets and their members, GOOSE and SV control blocks
+  with their GSE/SMV addresses (a `GooseControl` for the publisher), ldName,
+  and the data model of the DataTypeTemplates (`load_model`).
+  `open61850.mms.model.compare` and `open61850-mms compare-scl` check an IED
+  against its SCL; libiec61850's examples match theirs exactly.
 - `open61850.comtrade`: COMTRADE records read (1991, 1999, 2013; ASCII and
   binary formats) and resampled.
 

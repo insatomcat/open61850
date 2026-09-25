@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Florent Carli, SPDX-License-Identifier: Apache-2.0. A small SCD for tests/test_scl.py. -->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+  <Communication>
+    <SubNetwork name="PROCESS">
+      <ConnectedAP iedName="IED01" apName="AP1">
+        <Address><P type="IP">192.0.2.20</P></Address>
+        <GSE ldInst="PROT" cbName="gcbTrip">
+          <Address>
+            <P type="MAC-Address">01-0C-CD-01-00-2A</P><P type="APPID">002A</P>
+            <P type="VLAN-ID">064</P><P type="VLAN-PRIORITY">4</P>
+          </Address>
+          <MinTime unit="s" multiplier="m">4</MinTime><MaxTime unit="s" multiplier="m">1000</MaxTime>
+        </GSE>
+        <SMV ldInst="MU" cbName="msvcb01">
+          <Address><P type="MAC-Address">01-0C-CD-04-00-01</P><P type="APPID">4000</P></Address>
+        </SMV>
+      </ConnectedAP>
+    </SubNetwork>
+  </Communication>
+  <IED name="IED01" manufacturer="Vendor" type="Relay">
+    <AccessPoint name="AP1"><Server>
+      <LDevice inst="PROT" ldName="IED01_Protection">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+          <DataSet name="DS_TRIP">
+            <FCDA ldInst="PROT" lnClass="PTRC" lnInst="1" doName="Tr" daName="general" fc="ST"/>
+            <FCDA ldInst="MU" prefix="I" lnClass="MMXU" lnInst="1" doName="A.phsA" fc="MX"/>
+          </DataSet>
+          <ReportControl name="brcbTrip" datSet="DS_TRIP" buffered="true"><RptEnabled max="2"/></ReportControl>
+          <GSEControl name="gcbTrip" datSet="DS_TRIP" confRev="7" appID="TRIP_GOOSE"/>
+        </LN0>
+        <LN lnClass="PTRC" inst="1" lnType="PTRC_T"/>
+      </LDevice>
+      <LDevice inst="MU">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+          <SampledValueControl name="msvcb01" datSet="PhsMeas1" confRev="1" smvID="IED01MU01" smpRate="4800"
+                               smpMod="SmpPerSec" nofASDU="2"/>
+        </LN0>
+        <LN prefix="I" lnClass="MMXU" inst="1" lnType="MMXU_T"/>
+      </LDevice>
+    </Server></AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_T" lnClass="LLN0">
+      <DO name="Mod" type="ENC_Mod"/>
+    </LNodeType>
+    <LNodeType id="PTRC_T" lnClass="PTRC">
+      <DO name="Tr" type="ACT_T"/>
+    </LNodeType>
+    <LNodeType id="MMXU_T" lnClass="MMXU">
+      <DO name="A" type="WYE_T"/>
+    </LNodeType>
+    <DOType id="ENC_Mod" cdc="ENC">
+      <DA name="stVal" bType="Enum" type="Mod" fc="ST"/>
+      <DA name="q" bType="Quality" fc="ST"/>
+      <DA name="Oper" bType="Struct" type="Oper_T" fc="CO"/>
+      <DA name="ctlModel" bType="Enum" type="CtlModels" fc="CF"/>
+    </DOType>
+    <DOType id="ACT_T" cdc="ACT">
+      <DA name="general" bType="BOOLEAN" fc="ST"/>
+      <DA name="q" bType="Quality" fc="ST"/>
+    </DOType>
+    <DOType id="WYE_T" cdc="WYE">
+      <SDO name="phsA" type="CMV_T"/>
+      <DA name="angRef" bType="Enum" type="AngRef" fc="CF"/>
+    </DOType>
+    <DOType id="CMV_T" cdc="CMV">
+      <DA name="cVal" bType="Struct" type="Vector_T" fc="MX"/>
+      <DA name="q" bType="Quality" fc="MX"/>
+      <DA name="hist" bType="Struct" type="Vector_T" fc="MX" count="4"/>
+    </DOType>
+    <DAType id="Vector_T">
+      <BDA name="mag" bType="Struct" type="AnalogValue_T"/>
+    </DAType>
+    <DAType id="AnalogValue_T">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+    <DAType id="Oper_T">
+      <BDA name="ctlVal" bType="Enum" type="Mod"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+    </DAType>
+    <DAType id="Originator_T">
+      <BDA name="orCat" bType="Enum" type="OrCat"/>
+    </DAType>
+  </DataTypeTemplates>
+</SCL>

@@ -15,9 +15,14 @@ RUN mkdir /out && cp /l/build/examples/server_example_basic_io/server_example_ba
     /l/build/examples/server_example_control/server_example_control \
     /l/build/examples/server_example_goose/server_example_goose \
     /l/build/examples/sv_publisher/sv_publisher_example \
-    /l/build/examples/goose_subscriber/goose_subscriber_example /out/
+    /l/build/examples/goose_subscriber/goose_subscriber_example /out/ \
+ && mkdir /scl && cp /l/examples/server_example_basic_io/simpleIO_direct_control.cid \
+    /l/examples/server_example_control/simpleIO_control_tests.cid \
+    /l/examples/server_example_goose/simpleIO_direct_control_goose.cid \
+    /l/examples/iec61850_9_2_LE_example/sv.icd /scl/
 
 FROM python:3.13-slim
 COPY --from=build /out /usr/local/bin/
+COPY --from=build /scl /usr/local/share/libiec61850/
 COPY --from=build /l/build/src/libiec61850.so* /usr/local/lib/
 RUN ldconfig && pip install -q pytest

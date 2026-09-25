@@ -32,7 +32,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
 | `open61850.quality` | Quality and TimeQuality in readable form |
-| `open61850.scl` | SCL files: IEDs, addresses, logical devices, report control blocks and data sets |
+| `open61850.scl` | SCL files (CID, ICD, SCD): IEDs, addresses, logical devices, data sets and their members, report, GOOSE and SV control blocks with their multicast addresses, and the data model of the DataTypeTemplates, comparable with the one discovered online |
 | `open61850.capture` | GOOSE and SV capture on Linux from an AF_PACKET TPACKET_V3 ring, kernel timestamps, 802.1Q tags restored, no libpcap |
 | `open61850.pcap` | pcap and pcapng files (Wireshark, tcpdump), on any OS: reading, and writing classic pcap with nanosecond timestamps |
 | `open61850.ber` | ASN.1 BER primitives |
@@ -124,6 +124,19 @@ print("\n".join(bus.summary()))
 
 `GooseSupervisor` and `SvSupervisor` take decoded messages and a reception time, and keep only state: an application can feed them from its own receive loop.
 
+Take a GOOSE control block from an SCL file, or check an IED against its SCL:
+
+```python
+from open61850 import scl
+from open61850.mms import MmsClient, discover
+from open61850.mms.model import compare
+
+(ied,) = scl.load_ieds("IED01.cid")
+control = ied.goose_controls[0].goose_control(src_mac="02:00:00:00:00:01")   # for GoosePublisher
+with MmsClient.connect("192.0.2.10") as client:
+    print(compare(scl.load_model("IED01.cid"), discover(client)))              # [] when they match
+```
+
 Publish a GOOSE control block, as a protection relay would (Linux, root):
 
 ```python
@@ -177,6 +190,7 @@ open61850-mms 192.0.2.10 association
 open61850-mms 192.0.2.10 domains
 open61850-mms 192.0.2.10 browse IED01_LD0 --types
 open61850-mms 192.0.2.10 browse --fc MX --flat
+open61850-mms 192.0.2.10 compare-scl IED01.cid
 open61850-mms 192.0.2.10 rcbs --status
 open61850-mms 192.0.2.10 read 'IED01_LD0/LLN0.NamPlt[DC]' 'IED01_LD0/LLN0$ST$Mod$stVal'
 open61850-mms 192.0.2.10 dataset IED01_LD0/LLN0.DS_MEAS
@@ -184,7 +198,7 @@ open61850-mms 192.0.2.10 subscribe 'IED01_LD0/LLN0$BR$CB_MEAS'
 open61850-mms 192.0.2.10 operate IED01_BayLD/CBCSWI1.Pos open
 ```
 
-`browse` prints the data model (logical devices, logical nodes, data objects with their attributes and functional constraints, control blocks, data sets), with `--flat` one reference per line.
+`compare-scl station.scd --ied IED01` lists what the IED lacks or has more than its SCL (logical devices and nodes, attributes, control blocks, data sets). `browse` prints the data model (logical devices, logical nodes, data objects with their attributes and functional constraints, control blocks, data sets), with `--flat` one reference per line.
 
 `subscribe` takes a block or a group name without its instance number, picks a free instance, prints the decoded reports and releases the block on Ctrl-C.
 

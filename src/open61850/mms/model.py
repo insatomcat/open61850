@@ -42,6 +42,7 @@ __all__ = [
     "ServerModel",
     "logical_device_from_names",
     "discover",
+    "compare",
 ]
 
 
@@ -200,3 +201,35 @@ def discover(client: MmsClient, domains: Optional[Iterable[str]] = None, *, type
                 except MmsError:
                     node.type = None
     return model
+
+
+def compare(expected: ServerModel, actual: ServerModel) -> list[str]:
+    """What differs between two models, typically an SCL file's and the server's.
+
+    One line per difference: ``missing ...`` (in ``expected`` only) or
+    ``extra ...`` (in ``actual`` only), for logical devices, logical nodes,
+    data attributes (leaves), control blocks and data sets. Empty when they
+    match.
+    """
+    out: list[str] = []
+
+    def diff(what: str, want: Iterable[str], have: Iterable[str]) -> None:
+        want_list, have_list = list(want), list(have)
+        have_set, want_set = set(have_list), set(want_list)
+        out.extend(f"missing {what} {x}" for x in want_list if x not in have_set)
+        out.extend(f"extra {what} {x}" for x in have_list if x not in want_set)
+
+    diff("logical device", expected.logical_devices, actual.logical_devices)
+    for ld, device in expected.logical_devices.items():
+        other = actual.logical_devices.get(ld)
+        if other is None:
+            continue
+        diff("logical node", (f"{ld}/{n}" for n in device.logical_nodes), (f"{ld}/{n}" for n in other.logical_nodes))
+        for name, node in device.logical_nodes.items():
+            theirs = other.logical_nodes.get(name)
+            if theirs is None:
+                continue
+            diff("attribute", map(str, node.references()), map(str, theirs.references()))
+            diff("control block", map(str, node.control_blocks()), map(str, theirs.control_blocks()))
+            diff("data set", (f"{ld}/{name}.{d}" for d in node.data_sets), (f"{ld}/{name}.{d}" for d in theirs.data_sets))
+    return out

@@ -6,6 +6,7 @@
     open61850-mms HOST[:PORT] association
     open61850-mms HOST[:PORT] domains
     open61850-mms HOST[:PORT] browse [LD[/LN]] [--fc FC] [--flat] [--types]
+    open61850-mms HOST[:PORT] compare-scl FILE [--ied NAME]
     open61850-mms HOST[:PORT] rcbs [--status]
     open61850-mms HOST[:PORT] read REFERENCE [REFERENCE ...]
     open61850-mms HOST[:PORT] dataset LD/LLN0.DSNAME
@@ -16,6 +17,8 @@ A reference is ``LD/LN.DO.DA[FC]`` (``IED01_LD0/LLN0.Mod.stVal[ST]``) or the
 MMS name ``LD/LN$FC$DO$DA``. ``browse`` prints the data model: logical
 devices, logical nodes, data objects with their attributes and FCs, control
 blocks and data sets; ``--flat`` gives one reference per line.
+``compare-scl`` lists what the server lacks or has more than the IED of an
+SCL file (the only one, or ``--ied``), and exits with 1 when they differ.
 
 ``subscribe`` takes a block or the name of a group without its instance
 number (``IED01_LD0/LLN0$BR$CB_LDPHAS1_DQPO``): it picks a free instance,
@@ -105,6 +108,19 @@ def model_lines(model: ServerModel, fc: Optional[str] = None, flat: bool = False
             if fc is None:
                 lines += [f"    data set {name}" for name in node.data_sets]
     return lines
+
+
+def cmd_compare_scl(client: MmsClient, args: argparse.Namespace) -> int:
+    from open61850.mms.model import compare
+    from open61850.scl import load_model
+
+    expected = load_model(args.file, args.ied)
+    differences = compare(expected, discover(client, list(expected.logical_devices)))
+    for line in differences:
+        print(line)
+    leaves = sum(len(n.references()) for n in expected.logical_nodes())
+    print(f"{len(differences)} differences ({len(expected.logical_devices)} logical devices, {leaves} attributes in the SCL)")
+    return 1 if differences else 0
 
 
 def cmd_browse(client: MmsClient, args: argparse.Namespace) -> None:
@@ -256,6 +272,9 @@ def main() -> int:
     p.add_argument("--fc", type=str.upper, help="only this functional constraint")
     p.add_argument("--flat", action="store_true", help="one reference per line")
     p.add_argument("--types", action="store_true", help="read the types (one request per logical node)")
+    p = sub.add_parser("compare-scl")
+    p.add_argument("file", help="CID, ICD or SCD file")
+    p.add_argument("--ied", help="IED name (needed when the file has several)")
     p = sub.add_parser("rcbs")
     p.add_argument("--status", action="store_true", help="read RptEna/Resv of every instance")
     p = sub.add_parser("read")
@@ -278,6 +297,8 @@ def main() -> int:
         with MmsClient.connect(host, int(port or 102), on_information_report=reports.put) as client:
             if args.command == "subscribe":
                 cmd_subscribe(client, args, reports)
+            elif args.command == "compare-scl":
+                return cmd_compare_scl(client, args)
             else:
                 {
                     "association": cmd_association, "domains": cmd_domains, "browse": cmd_browse, "rcbs": cmd_rcbs,
