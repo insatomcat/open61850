@@ -178,7 +178,7 @@ class PacketCapture:
         self._next_block = 0
         self._ring: Optional[mmap.mmap] = None
         # Protocol 0: no frame is queued before the filter is attached and the socket bound.
-        self._sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)  # type: ignore[attr-defined]
+        self._sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)
         try:
             self.set_ethertypes(ethertypes)
             self._sock.setsockopt(SOL_PACKET, PACKET_VERSION, TPACKET_V3)

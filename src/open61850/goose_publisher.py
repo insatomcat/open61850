@@ -154,7 +154,7 @@ class GoosePublisher:
         if self._thread is not None:
             raise RuntimeError("already started")
         if self._send is None:
-            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)  # type: ignore[attr-defined]
+            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
             try:
                 sock.bind((self.iface, 0))
             except OSError:

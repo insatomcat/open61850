@@ -74,6 +74,7 @@ known-third-party = ["conftest"]
 
 [tool.mypy]
 python_version = "3.10"
+platform = "linux"  # the AF_PACKET code is Linux only
 files = ["src/open61850"]
 check_untyped_defs = true
 warn_unused_ignores = true

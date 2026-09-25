@@ -556,7 +556,7 @@ class _PythonEngine:
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)  # type: ignore[attr-defined]
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
         sock.bind((self.iface, 0))
         self._thread = threading.Thread(target=self._run, args=(sock,), name="sv-publisher", daemon=True)
         self._thread.start()
