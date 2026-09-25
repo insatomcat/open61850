@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-09-25)
 
 - `open61850.server`: an MMS server. `IedModel.from_scl` builds typed values,
   data sets and control blocks from a CID/ICD/SCD; `MmsServer` serves them
   (association, GetNameList, Identify, Read, Write, type and data set
-  descriptions). libiec61850's clients browse, read and write it.
+  descriptions) and runs buffered and unbuffered reports (reservation,
+  TrgOps, BufTm, integrity, GI, EntryID replay). `open61850-server` serves
+  an SCL file from the command line. libiec61850's clients browse, read,
+  write and receive reports from it. Controls are not executed yet.
+- `open61850.mms.types.encode_type_description`; `pdu.wrap` takes the
+  presentation context.
 
 ## 0.4.0 (2026-09-25)
 
