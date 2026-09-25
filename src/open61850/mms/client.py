@@ -5,7 +5,8 @@
 
 One background thread receives every PDU: responses are matched to their
 request by invokeID, so several requests may be outstanding (from several
-threads); informationReports go to the ``on_information_report`` callback
+threads), up to the number the server accepted at association time (see
+:attr:`MmsClient.association`); informationReports go to the ``on_information_report`` callback
 and to the listeners added with :meth:`MmsClient.add_report_listener`.
 Callbacks run on the receive thread: keep them short or hand the work to a
 queue.
@@ -28,6 +29,7 @@ from typing import Optional
 
 from ..data import IECData
 from . import pdu
+from .association import Association, AssociationParameters, association_request, decode_association_response
 from .errors import (
     DataAccessError,
     MmsConnectionError,
@@ -57,8 +59,12 @@ class MmsClient:
         *,
         on_information_report: Optional[InformationReportCallback] = None,
         request_timeout: float = 10.0,
+        association: Optional[Association] = None,
     ) -> None:
         self._conn = connection
+        self.association = association
+        outstanding = association.max_outstanding_calling if association is not None else 0
+        self._slots = threading.BoundedSemaphore(outstanding) if outstanding > 0 else None
         self._on_report = on_information_report
         self._listeners: list[InformationReportCallback] = []
         self.request_timeout = request_timeout
@@ -79,6 +85,7 @@ class MmsClient:
         *,
         timeout: float = 10.0,
         on_information_report: Optional[InformationReportCallback] = None,
+        association: AssociationParameters = AssociationParameters(),
     ) -> MmsClient:
         """Open TCP, COTP and the MMS association, then start receiving."""
         try:
@@ -86,15 +93,15 @@ class MmsClient:
         except OSError as exc:
             raise MmsConnectionError(f"cannot connect to {host}:{port}: {exc}") from exc
         try:
-            conn.send(pdu.INITIATE_REQUEST)
+            conn.send(association_request(association))
             response = _recv_with_timeout(conn, timeout)
             if response is None:
                 raise MmsConnectionError("connection closed during association")
-            pdu.check_initiate_response(response)
+            accepted = decode_association_response(response)
         except BaseException:
             conn.close()
             raise
-        client = cls(conn, on_information_report=on_information_report, request_timeout=timeout)
+        client = cls(conn, on_information_report=on_information_report, request_timeout=timeout, association=accepted)
         client._start()
         return client
 
@@ -189,6 +196,17 @@ class MmsClient:
 
     def request(self, service: bytes, *, timeout: Optional[float] = None) -> pdu.ConfirmedResponse:
         """Send a ConfirmedServiceRequest and wait for its response."""
+        limit = self.request_timeout if timeout is None else timeout
+        if self._slots is None:
+            return self._request(service, limit)
+        if not self._slots.acquire(timeout=limit):
+            raise MmsTimeout(f"{self.association.max_outstanding_calling} requests already outstanding")  # type: ignore[union-attr]
+        try:
+            return self._request(service, limit)
+        finally:
+            self._slots.release()
+
+    def _request(self, service: bytes, timeout: float) -> pdu.ConfirmedResponse:
         pending = _Pending()
         with self._lock:
             if self._closed.is_set():
@@ -201,7 +219,7 @@ class MmsClient:
             with self._lock:
                 self._pending.pop(invoke_id, None)
             raise MmsConnectionError(f"send failed: {exc}") from exc
-        if not pending.done.wait(self.request_timeout if timeout is None else timeout):
+        if not pending.done.wait(timeout):
             with self._lock:
                 self._pending.pop(invoke_id, None)
             raise MmsTimeout(f"no response to invokeID {invoke_id}")

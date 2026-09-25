@@ -42,6 +42,7 @@ from iec61850.mms import (
     ReasonCode,
     ServiceError,
     TrgOps,
+    association,
     decode_report,
     pdu,
     rcb,
@@ -51,6 +52,7 @@ from iec61850.mms.report import ReportDecodeError, bits_of, bitstring_of
 
 SERVICES = json.loads((DATA_DIR / "iedscout_services.json").read_text())
 NAMES = json.loads((DATA_DIR / "iedscout_getnamelist.json").read_text())
+ASSOCIATION = json.loads((DATA_DIR / "association_responses.json").read_text())
 
 
 def _mms(hex_user_data: str) -> bytes:
@@ -191,8 +193,9 @@ Handler = Callable[[int, int, bytes, "FakeServer"], None]
 class FakeServer:
     """A scripted MMS server on a socketpair. ``handler(invoke_id, service, content, server)``."""
 
-    def __init__(self, handler: Handler, tpdu_size: int = 1024) -> None:
+    def __init__(self, handler: Handler, tpdu_size: int = 1024, accept: str = "vmc7_accept") -> None:
         self.handler = handler
+        self.accept = bytes.fromhex(ASSOCIATION[accept])
         self.client_sock, self.sock = socket.socketpair()
         self.conn = transport.IsoConnection(self.sock, tpdu_size=tpdu_size)
         self.errors: list[BaseException] = []
@@ -204,8 +207,8 @@ class FakeServer:
             cr = transport.recv_tpkt(self.sock)
             assert cr is not None and cr[1] == 0xE0
             transport.send_tpkt(self.sock, bytes.fromhex("0bd00000000100c0010a"))  # CC, 1024-byte TPDUs
-            assert self.conn.recv() == pdu.INITIATE_REQUEST
-            self.conn.send(bytes.fromhex("0e00"))
+            assert self.conn.recv() == association.association_request()
+            self.conn.send(self.accept)
             while True:
                 user_data = self.conn.recv()
                 if user_data is None:
@@ -287,6 +290,34 @@ def test_concurrent_requests_are_matched_by_invoke_id(serve: Callable[..., tuple
     for t in threads:
         t.join(timeout=5)
     assert results == {f"V{i}": VisibleStringData(f"V{i}") for i in range(3)}
+
+
+def test_requests_wait_for_a_slot_when_the_server_accepts_one(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    in_flight: list[int] = []
+    peak = [0]
+    lock = threading.Lock()
+
+    def handler(invoke_id: int, service: int, content: bytes, server: FakeServer) -> None:
+        with lock:
+            in_flight.append(invoke_id)
+            peak[0] = max(peak[0], len(in_flight))
+
+        def answer() -> None:
+            time.sleep(0.05)
+            with lock:
+                in_flight.remove(invoke_id)
+            server.respond(invoke_id, service, _read_ok([encode_data(UIntData(invoke_id))]))
+
+        threading.Thread(target=answer, daemon=True).start()
+
+    client, _ = serve(handler, accept="ssc600_accept")
+    assert client.association is not None and client.association.max_outstanding_calling == 1
+    threads = [threading.Thread(target=client.read, args=(ObjectName(f"V{i}", "LD0"),)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert peak[0] == 1
 
 
 def test_reports_are_delivered_while_a_request_waits(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:

@@ -4,6 +4,7 @@
 
 """Command-line MMS client built on iec61850.mms.
 
+    python3 tools/mms_client.py HOST[:PORT] association
     python3 tools/mms_client.py HOST[:PORT] domains
     python3 tools/mms_client.py HOST[:PORT] rcbs [--status]
     python3 tools/mms_client.py HOST[:PORT] read DOMAIN/ITEM [DOMAIN/ITEM ...]
@@ -14,6 +15,9 @@
 ``subscribe`` takes a block or the name of a group without its instance
 number (``IED01_LD0/LLN0$BR$CB_LDPHAS1_DQPO``): it picks a free instance,
 enables it, prints the decoded reports and disables it on Ctrl-C.
+
+``association`` prints what the server accepted: largest PDU, requests
+in flight, nesting level and the services it supports.
 
 ``operate`` runs one control (station-control origin) with the object's own
 control model and prints the outcome, or the AddCause of a refusal.
@@ -58,6 +62,25 @@ def all_rcbs(client: MmsClient) -> list[ObjectName]:
         names = client.get_name_list(OBJECT_CLASS_NAMED_VARIABLE, domain)
         found += [ObjectName(n, domain) for n in names if rcb.is_rcb_name(n)]
     return found
+
+
+# ServiceSupportOptions bits worth showing (ISO 9506-2).
+SERVICES = {
+    0: "status", 1: "getNameList", 2: "identify", 4: "read", 5: "write",
+    6: "getVariableAccessAttributes", 12: "getNamedVariableListAttributes",
+    72: "fileOpen", 73: "fileRead", 74: "fileClose", 77: "fileDirectory",
+    79: "informationReport", 83: "conclude", 84: "cancel",
+}
+
+
+def cmd_association(client: MmsClient, _args: argparse.Namespace) -> None:
+    a = client.association
+    assert a is not None
+    print(f"max PDU size         {a.max_pdu_size}")
+    print(f"requests in flight   {a.max_outstanding_calling} (server side {a.max_outstanding_called})")
+    print(f"data nesting level   {a.nesting_level}")
+    print(f"MMS version          {a.version}")
+    print("services             " + ", ".join(name for bit, name in SERVICES.items() if a.supports(bit)))
 
 
 def cmd_domains(client: MmsClient, _args: argparse.Namespace) -> None:
@@ -165,6 +188,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("server", help="HOST or HOST:PORT (default port 102)")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("association")
     sub.add_parser("domains")
     p = sub.add_parser("rcbs")
     p.add_argument("--status", action="store_true", help="read RptEna/Resv of every instance")
@@ -190,7 +214,7 @@ def main() -> int:
                 cmd_subscribe(client, args, reports)
             else:
                 {
-                    "domains": cmd_domains, "rcbs": cmd_rcbs, "read": cmd_read, "dataset": cmd_dataset,
+                    "association": cmd_association, "domains": cmd_domains, "rcbs": cmd_rcbs, "read": cmd_read, "dataset": cmd_dataset,
                     "operate": cmd_operate,
                 }[args.command](
                     client, args

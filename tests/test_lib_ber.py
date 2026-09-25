@@ -85,3 +85,14 @@ def test_boolean() -> None:
     assert ber.decode_boolean(b"\x01") is True
     with pytest.raises(ber.BerError):
         ber.decode_boolean(b"")
+
+
+def test_object_identifiers() -> None:
+    for arcs, hex_ in [((1, 0, 9506, 2, 3), "28ca220203"), ((2, 2, 1, 0, 1), "52010001"), ((1, 1, 1, 999, 1), "2901876701")]:
+        assert ber.encode_oid(arcs).hex() == hex_
+        assert ber.decode_oid(bytes.fromhex(hex_)) == arcs
+    assert ber.decode_oid(ber.encode_oid((2, 999, 3))) == (2, 999, 3)
+    with pytest.raises(ValueError):
+        ber.encode_oid((1, 40))
+    with pytest.raises(ber.BerError):
+        ber.decode_oid(bytes.fromhex("2981"))

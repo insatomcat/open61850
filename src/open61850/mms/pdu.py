@@ -47,24 +47,6 @@ OBJECT_CLASS_NAMED_VARIABLE = 0
 OBJECT_CLASS_NAMED_VARIABLE_LIST = 2
 OBJECT_CLASS_DOMAIN = 9
 
-# Association request replayed from a capture accepted by the target IEDs:
-# Session CONNECT, Presentation CP-type, ACSE AARQ (IEC 61850 application
-# context) and MMS Initiate-RequestPDU. A built encoder will replace it.
-INITIATE_REQUEST = bytes.fromhex(
-    "0db20506130100160102140200023302000134020001"
-    "c19c318199a003800101a28191810400000001820400000001"
-    "a423300f0201010604520100013004060251013010020103"
-    "060528ca220201300406025101615e305c020101a0576055"
-    "a107060528ca220203a20706052901876701a30302010c"
-    "a606060429018767a70302010c"
-    "be2f282d020103a028a826"
-    "800300fde881010582010583010a"
-    "a416800101810305f100"
-    "820c03ee1c00000408000079ef18"
-)
-_SPDU_ACCEPT = 0x0E
-_SPDU_REFUSE = 0x0C
-
 
 # --- names -------------------------------------------------------------------
 
@@ -136,16 +118,6 @@ def unwrap(user_data: bytes) -> bytes:
     if not single:
         raise MmsProtocolError("presentation data without single-ASN1-type")
     return single[0].value
-
-
-def check_initiate_response(user_data: bytes) -> None:
-    """Raise unless the association response is a session ACCEPT."""
-    if not user_data:
-        raise MmsProtocolError("empty association response")
-    if user_data[0] == _SPDU_REFUSE:
-        raise MmsProtocolError("association refused (session REFUSE)")
-    if user_data[0] != _SPDU_ACCEPT:
-        raise MmsProtocolError(f"unexpected association response SPDU 0x{user_data[0]:02x}")
 
 
 # --- requests ----------------------------------------------------------------

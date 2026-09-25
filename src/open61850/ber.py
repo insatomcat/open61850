@@ -210,3 +210,34 @@ def decode_boolean(content: bytes) -> bool:
     if len(content) != 1:
         raise BerError(f"BOOLEAN must be one byte, got {len(content)}")
     return content[0] != 0
+
+
+# --- OBJECT IDENTIFIER -------------------------------------------------------
+
+
+def encode_oid(arcs: tuple[int, ...]) -> bytes:
+    """Content octets of an OBJECT IDENTIFIER (X.690 8.19)."""
+    if len(arcs) < 2 or arcs[0] > 2 or (arcs[0] < 2 and arcs[1] > 39) or min(arcs) < 0:
+        raise ValueError(f"invalid object identifier {arcs}")
+    out = bytearray()
+    for arc in (arcs[0] * 40 + arcs[1], *arcs[2:]):
+        chunk = [arc & 0x7F]
+        arc >>= 7
+        while arc:
+            chunk.append(0x80 | (arc & 0x7F))
+            arc >>= 7
+        out += bytes(reversed(chunk))
+    return bytes(out)
+
+
+def decode_oid(content: bytes) -> tuple[int, ...]:
+    if not content or content[-1] & 0x80:
+        raise BerError(f"bad OBJECT IDENTIFIER {content.hex()}")
+    values, arc = [], 0
+    for byte in content:
+        arc = (arc << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            values.append(arc)
+            arc = 0
+    first = min(values[0] // 40, 2)
+    return (first, values[0] - 40 * first, *values[1:])
