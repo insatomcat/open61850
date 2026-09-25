@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `open61850.server`: an MMS server. `IedModel.from_scl` builds typed values,
+  data sets and control blocks from a CID/ICD/SCD; `MmsServer` serves them
+  (association, GetNameList, Identify, Read, Write, type and data set
+  descriptions). libiec61850's clients browse, read and write it.
+
 ## 0.4.0 (2026-09-25)
 
 - `open61850.pcap`: pcap and pcapng files read on any OS (as the

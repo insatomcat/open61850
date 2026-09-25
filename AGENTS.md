@@ -40,6 +40,9 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `mms/__main__.py` | The `open61850-mms` command line. |
 | `goose_publisher.py` | `GooseControl` (identity, addresses, min/max time, TAL factor), `GoosePublisher`: a thread waits on a condition; `publish` makes a new state (stNum + 1, sqNum 0, t = now) sent at once, then waits min, 2 min... max, max on a schedule that does not drift; TAL = 3 x the wait, like libiec61850 (`mms_goose.c`). `send` can replace the socket (tests). `open61850-goose` reads new states on stdin. |
 | `comtrade.py` | COMTRADE reader (C37.111 1991/1999/2013, ASCII, BINARY, BINARY32, FLOAT32; `.cff` not read): `analog()` in primary or secondary values (the `ps` field and the ratio), missing samples NaN (99999, empty, 0x8000, 0x80000000, NaN), `times()` from the rates or the timestamps, `resample` (linear, NaN as 0). Checked against the `comtrade` package from PyPI on the four formats: same values within float32 rounding, same digital states and times. |
+| `server/model.py` | `IedModel` from SCL: a `Node` tree per LN (FC, DO, SDO, DA, BDA), bType to MMS type with libiec61850's sizes (Quality `bit-string(<=13)`, Enum `integer8`, Check `bit-string(<=2)`...), `Val` and DOI/DAI initial values (Enum names through EnumType), control blocks as 8-1 structures (BRCB, URCB, GoCB, MSVCB), FCs in libiec61850's order (MX ST CO CF DC SP SG RP LG BR GO SV SE MS US EX SR OR BL). Edition 1 files spell `TimeofEntry` and have no BRCB ResvTms; `gi` and `bufOvfl` default to true. `set` (application, any FC) and `write` (client: CF DC SP SV SE BL) with type checks; change listeners. |
+| `server/protocol.py` | Server side of COTP (CR/CC), association (CONNECT/CP/AARQ/initiate-Request decoded; ACCEPT/CPA/AARE/initiate-Response laid out like the VMC7's, with the client's presentation contexts), MMS requests and responses, errors, rejects, informationReport. |
+| `server/server.py` | `MmsServer`: accept thread, one thread per client; GetNameList (sorted by string, continueAfter, pages within the PDU size), Identify, Read (variables or a data set), Write (through `write_hooks` first), GetVariableAccessAttributes, GetNamedVariableListAttributes, Conclude; Reject otherwise. `stop()` shuts the listening socket down first (Linux leaves accept() blocked and the port bound on close alone). |
 | `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). `Playback`: INT32 rows (and optional qualities) sent instead of the waves and fault from sample `start_second * rate + start_smp`, optionally every `repeat_s`; `start_second=None` is set by `Publisher.start`; `from_sv_frames` (captured stream, recent smpCnt skipped), `from_comtrade` (resampled). |
 
 Public API: each module's `__all__` (the `mms` package re-exports the usual
@@ -117,8 +120,16 @@ libiec61850 flags the second copy (same sqNum) INVALID. The model built
 from each example's CID matches the one its server exposes, with no
 difference (106 attributes for basic_io), and the GSE/SMV addresses of the
 CIDs are those the publishers send (APPID `1000` in SCL is 0x1000). What
-the examples taught: libiec61850 lists names in alphabetical order (FC CF
-before ST), and its GOOSE example updates its values every second.
+the examples taught: libiec61850 lists names in an order of its own (the
+same set as ours, which sorts by string), and its GOOSE example updates
+its values every second.
+
+The server, loaded with basic_io's CID, is read by libiec61850's
+`mms_utility` (identify, domains), browsed by `iec61850_client_example2`,
+and read, written and asked for its data set and RCB by
+`iec61850_client_example1`. Built from the same CIDs, its model has the
+names, types and initial values of libiec61850's servers, checked
+attribute by attribute (the differences are runtime values).
 
 ## The native SV engine (`native/`)
 
