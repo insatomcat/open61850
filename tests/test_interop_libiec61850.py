@@ -416,5 +416,26 @@ def test_libiec61850_reads_and_writes_our_server(our_server) -> None:
     out = _client("iec61850_client_example1", "127.0.0.1", str(OUR_PORT), timeout=4)
     assert "Connected" in out and "read float value: 1.500000" in out
     assert "failed to write" not in out and "failed to read dataset" not in out
-    assert "RptEna = 0" in out
+    assert "RptEna = 0" in out and "report activation failed" not in out
     assert our_server.model.get(f"{LD}/GGIO1.NamPlt.vendor[DC]").value == "libiec61850.com"
+
+
+def test_libiec61850_gets_reports_from_our_server(our_server) -> None:
+    import signal
+
+    client = subprocess.Popen(["stdbuf", "-oL", "iec61850_client_example_reporting", "127.0.0.1", str(OUR_PORT)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        time.sleep(2.0)  # Resv, DatSet, TrgOps (dchg, qchg, GI), RptEna, then GI after a second
+        our_server.model.set(f"{LD}/GGIO1.SPCSO2.stVal[ST]", True)
+        time.sleep(0.5)
+    finally:
+        client.send_signal(signal.SIGINT)  # it disables the block and closes
+        out, _ = client.communicate(timeout=10)
+    reports = out.split("received report for")[1:]
+    assert len(reports) >= 2, out
+    assert all(r.startswith(f" {LD}/LLN0.RP.EventsRCB") for r in reports)
+    assert "(included for reason 16)" in reports[0]  # general interrogation, every member
+    assert any("(included for reason 1)" in r for r in reports[1:])  # the data change
+    status = our_server.model.get(f"{LD}/LLN0$RP$EventsRCB01$RptEna")
+    assert status.value is False

@@ -56,7 +56,7 @@ def test_model_from_scl(model: IedModel) -> None:
     assert model.get(f"{PROT}/LLN0$GO$gcbTrip$GoID") == VisibleStringData("TRIP_GOOSE")
     assert model.data_sets[ObjectName("LLN0$DS_TRIP", PROT)] == [
         ObjectName("PTRC1$ST$Tr$general", PROT), ObjectName("IMMXU1$MX$A$phsA", "IED01MU")]
-    assert model.node(f"{PROT}/PTRC1$ST$Tr$general").triggers == frozenset()
+    assert model.node(f"{PROT}/PTRC1$ST$Tr$general").triggers == frozenset({"dchg"})
     with pytest.raises(KeyError):
         model.get(f"{PROT}/LLN0$ST$Nope")
 
@@ -134,3 +134,128 @@ def test_server_stop_closes_clients(model: IedModel) -> None:
     server.stop()
     assert client.wait_closed(5) is not None or not client.is_connected
     client.close()
+
+
+# --- reports -----------------------------------------------------------------------
+
+import queue  # noqa: E402
+import time  # noqa: E402
+
+from open61850.mms import decode_report, rcb  # noqa: E402
+
+BRCBS = [ObjectName(f"LLN0$BR$brcbTrip0{i}", PROT) for i in (1, 2)]
+TRIP = f"{PROT}/PTRC1.Tr.general[ST]"
+
+
+def _reports(q: queue.Queue, wait: float = 0.3) -> list:
+    time.sleep(wait)
+    out = []
+    while not q.empty():
+        out.append(decode_report(q.get()))
+    return out
+
+
+def _reasons(report) -> list[list[str]]:
+    return [[k for k, v in vars(e.reason).items() if v] for e in report.entries]
+
+
+def test_brcb_gi_change_integrity_and_release(server: MmsServer, model: IedModel) -> None:
+    q: queue.Queue = queue.Queue()
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        free = rcb.find_free(client, BRCBS)
+        assert free.rcb == BRCBS[0]
+        rcb.enable(client, free.rcb, rcb.RcbSettings(intg_pd_ms=300, purge_buf=True))
+        (gi,) = _reports(q, 0.1)
+        assert gi.rpt_id == f"{PROT}/LLN0$BR$brcbTrip01" and _reasons(gi) == [["general_interrogation"]] * 2
+        model.set(TRIP, True)
+        model.set(f"{PROT}/PTRC1.Tr.q[ST]", 0x0800)  # q is not in the data set: nothing
+        (change,) = _reports(q, 0.1)
+        assert [(e.index, e.value) for e in change.entries] == [(0, BoolData(True))] and _reasons(change) == [["data_change"]]
+        integrity = _reports(q, 0.35)
+        assert integrity and _reasons(integrity[0]) == [["integrity"]] * 2
+        seq = [gi.seq_num, change.seq_num, integrity[0].seq_num]
+        assert seq == [0, 1, 2] and int.from_bytes(change.entry_id, "big") == int.from_bytes(gi.entry_id, "big") + 1
+        with MmsClient.connect("127.0.0.1", server.port) as other:
+            with pytest.raises(rcb.RcbError):  # reserved by the first client
+                rcb.enable(other, free.rcb)
+            assert rcb.find_free(other, BRCBS).rcb == BRCBS[1]
+            with pytest.raises(DataAccessError):  # configuration is frozen while enabled
+                client.write(f"{PROT}/LLN0$BR$brcbTrip01$IntgPd", __import__("open61850").data.UIntData(1000))
+        rcb.disable(client, free.rcb)
+    status = model.get(f"{PROT}/LLN0$BR$brcbTrip01$RptEna")
+    assert status == BoolData(False)
+
+
+def test_buftm_gathers_changes(server: MmsServer, model: IedModel) -> None:
+    q: queue.Queue = queue.Queue()
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, buf_tm_ms=150, general_interrogation=False))
+        model.set(TRIP, True)
+        model.set("IED01MU/IMMXU1.A.phsA.q[MX]", 0x0800)  # no qchg on this q in the SCL: not reported
+        model.set(TRIP, False)  # the same member again: the first entry goes at once
+        reports = _reports(q, 0.3)
+        assert [[(e.index, e.value) for e in r.entries] for r in reports] == [[(0, BoolData(True))], [(0, BoolData(False))]]
+
+
+def test_buffered_entries_replayed_from_entry_id(server: MmsServer, model: IedModel) -> None:
+    q: queue.Queue = queue.Queue()
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, purge_buf=True, resv_tms=2))
+        (gi,) = _reports(q, 0.1)
+    # the client is gone; the block keeps buffering and stays reserved for its address
+    model.set(TRIP, True)
+    model.set(TRIP, False)
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        settings = rcb.RcbSettings(intg_pd_ms=0, entry_id=gi.entry_id, general_interrogation=False)
+        rcb.enable(client, BRCBS[0], settings)  # same address: its reservation
+        replay = _reports(q, 0.2)
+        assert [r.entries[0].value for r in replay] == [BoolData(True), BoolData(False)]
+        rcb.disable(client, BRCBS[0])
+        client.write(f"{PROT}/LLN0$BR$brcbTrip01$PurgeBuf", BoolData(True))
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, entry_id=bytes(8), general_interrogation=False))
+        assert _reports(q, 0.2) == []  # purged
+
+
+def test_disconnect_disables_the_block(server: MmsServer, model: IedModel) -> None:
+    client = MmsClient.connect("127.0.0.1", server.port)
+    rcb.enable(client, BRCBS[1], rcb.RcbSettings(intg_pd_ms=0, resv_tms=0, general_interrogation=False))
+    assert model.get(f"{PROT}/LLN0$BR$brcbTrip02$RptEna") == BoolData(True)
+    client.close()
+    deadline = time.monotonic() + 2
+    while model.get(f"{PROT}/LLN0$BR$brcbTrip02$RptEna") == BoolData(True) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert model.get(f"{PROT}/LLN0$BR$brcbTrip02$RptEna") == BoolData(False)
+    with MmsClient.connect("127.0.0.1", server.port) as other:
+        assert rcb.find_free(other, [BRCBS[1]]) is not None  # ResvTms 0: released at once
+
+
+# --- command line --------------------------------------------------------------------
+
+
+def test_server_command_line() -> None:
+    import os
+    import re
+    import subprocess
+    import sys
+
+    from conftest import ROOT
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "open61850.server", str(SCD), "--host", "127.0.0.1", "--port", "0", "--duration", "10"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+    )
+    try:
+        banner = process.stderr.readline()
+        port = int(re.search(r":(\d+)$", banner.strip()).group(1))
+        assert banner.startswith("open61850-server: IED01 (IED01_Protection, IED01MU) on 127.0.0.1:")
+        process.stdin.write(f"{TRIP} true\nIED01MU/IMMXU1.A.phsA.cVal.mag.f[MX] 42.5\n{PROT}/NOPE[ST] 1\n")
+        process.stdin.flush()
+        assert process.stdout.readline().strip() == f"{TRIP} = bool(True)"
+        assert process.stdout.readline().strip().endswith("= float32(42.5)")
+        assert "no " in process.stderr.readline()
+        with MmsClient.connect("127.0.0.1", port) as client:
+            assert client.read(TRIP) == BoolData(True)
+    finally:
+        process.terminate()
+        process.wait(10)

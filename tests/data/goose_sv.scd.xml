@@ -57,8 +57,8 @@
       <DA name="ctlModel" bType="Enum" type="CtlModels" fc="CF"/>
     </DOType>
     <DOType id="ACT_T" cdc="ACT">
-      <DA name="general" bType="BOOLEAN" fc="ST"/>
-      <DA name="q" bType="Quality" fc="ST"/>
+      <DA name="general" bType="BOOLEAN" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
     </DOType>
     <DOType id="WYE_T" cdc="WYE">
       <SDO name="phsA" type="CMV_T"/>

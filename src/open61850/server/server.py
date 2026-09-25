@@ -33,6 +33,7 @@ from ..mms.pdu import ObjectName
 from ..mms.transport import IsoConnection, TransportError
 from . import protocol
 from .model import IedModel
+from .reporting import ReportEngine
 
 __all__ = ["MmsServer", "ServerConnection", "ERROR_DEFINITION", "ERROR_ACCESS"]
 
@@ -178,7 +179,7 @@ class MmsServer:
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
-                 max_outstanding: int = 5, nesting_level: int = 10) -> None:
+                 max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True) -> None:
         self.model = model
         self.host = host
         self.port = port
@@ -187,6 +188,9 @@ class MmsServer:
         # Hooks see every write first: True = done, an int = refused with that DataAccessError,
         # None = not theirs (reports and controls plug in here).
         self.write_hooks: list[WriteHook] = []
+        self.close_hooks: list[Callable[[ServerConnection], None]] = []
+        self.reports_enabled = reports
+        self.reports: Optional[ReportEngine] = None
         self.connections: list[ServerConnection] = []
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
@@ -206,6 +210,8 @@ class MmsServer:
         return []
 
     def start(self) -> None:
+        if self.reports_enabled and self.reports is None:
+            self.reports = ReportEngine(self)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))
@@ -240,6 +246,8 @@ class MmsServer:
         with self._lock:
             if connection in self.connections:
                 self.connections.remove(connection)
+        for hook in list(self.close_hooks):
+            hook(connection)
 
     def broadcast(self, mms_pdu: bytes, to: Optional[ServerConnection] = None) -> None:
         """Send an unconfirmed PDU to one connection, or to every one."""
@@ -264,6 +272,8 @@ class MmsServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        if self.reports is not None:
+            self.reports.stop()
 
     def __enter__(self) -> MmsServer:
         return self
