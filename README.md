@@ -18,6 +18,8 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | Module | Content |
 |--------|---------|
 | `open61850.mms` | MMS client over TCP: association (Session, Presentation, ACSE, Initiate) with the negotiated limits honoured, reads and writes, GetNameList, type and data set descriptions, several requests in flight matched by invokeID, reports delivered to callbacks, typed errors |
+| `open61850.mms.reference` | IEC 61850 references (`LD/LN.DO.DA [FC]`) and their MMS names; every client method takes either notation |
+| `open61850.mms.model` | The server's data model discovered over MMS: logical devices and nodes, data objects and attributes with their functional constraints, control blocks, data sets, types; references resolved against it |
 | `open61850.mms.report` | IEC 61850 report decoding driven by the report's own OptFlds and inclusion bit string (segmentation, reason codes, data references) |
 | `open61850.mms.rcb` | Report control blocks: status, free instance, reservation (edition 1 and 2 BRCBs, URCBs), enabling with checked writes, release |
 | `open61850.mms.control` | Controls: direct and select-before-operate, normal and enhanced security (waits for the CommandTermination, reports the LastApplError AddCause) |
@@ -37,15 +39,19 @@ Only `open61850.mms`, `open61850.capture` and the `Publisher` of `open61850.sv_p
 
 ## Examples
 
-Read a value and list the logical devices:
+Discover the data model and read values by their IEC 61850 reference:
 
 ```python
-from open61850.mms import MmsClient, ObjectName, OBJECT_CLASS_DOMAIN
+from open61850.mms import MmsClient, discover
 
 with MmsClient.connect("192.0.2.10") as client:
     print(client.association.max_outstanding_calling)   # requests the IED accepts at once
-    print(client.get_name_list(OBJECT_CLASS_DOMAIN))
-    print(client.read(ObjectName("LLN0$ST$Mod$stVal", "IED01_LD0")))
+    model = discover(client)                             # logical devices, nodes, data, control blocks
+    for ref in model.references(fc="MX"):
+        print(ref)                                       # IED01_LD0/MMXU1.TotW.mag.f [MX]
+    print(client.read("IED01_LD0/LLN0.Mod.stVal[ST]"))  # same as "IED01_LD0/LLN0$ST$Mod$stVal"
+    ref = model.resolve("IED01_LD0/MMXU1.TotW.mag.f")    # the FC found in the model
+    print(ref, client.read(ref))
 ```
 
 Subscribe to a buffered report control block:
@@ -72,10 +78,10 @@ with MmsClient.connect("192.0.2.10", on_information_report=reports.put) as clien
 Operate a breaker (the control model is read from the IED):
 
 ```python
-from open61850.mms import MmsClient, ObjectName, operate
+from open61850.mms import MmsClient, operate
 
 with MmsClient.connect("192.0.2.10") as client:
-    result = operate(client, ObjectName("CBCSWI1$CO$Pos", "IED01_BayLD"), False)   # False = open
+    result = operate(client, "IED01_BayLD/CBCSWI1.Pos", False)   # False = open
     print(result)   # control model, ctlNum, CommandTermination, duration
 ```
 
@@ -140,12 +146,16 @@ Waveforms are functions of UNIX time, so several streams, processes or machines 
 ```bash
 open61850-mms 192.0.2.10 association
 open61850-mms 192.0.2.10 domains
+open61850-mms 192.0.2.10 browse IED01_LD0 --types
+open61850-mms 192.0.2.10 browse --fc MX --flat
 open61850-mms 192.0.2.10 rcbs --status
-open61850-mms 192.0.2.10 read 'IED01_LD0/LLN0$DC$NamPlt'
-open61850-mms 192.0.2.10 dataset 'IED01_LD0/LLN0$DS_MEAS'
+open61850-mms 192.0.2.10 read 'IED01_LD0/LLN0.NamPlt[DC]' 'IED01_LD0/LLN0$ST$Mod$stVal'
+open61850-mms 192.0.2.10 dataset IED01_LD0/LLN0.DS_MEAS
 open61850-mms 192.0.2.10 subscribe 'IED01_LD0/LLN0$BR$CB_MEAS'
-open61850-mms 192.0.2.10 operate 'IED01_BayLD/CBCSWI1$CO$Pos' open
+open61850-mms 192.0.2.10 operate IED01_BayLD/CBCSWI1.Pos open
 ```
+
+`browse` prints the data model (logical devices, logical nodes, data objects with their attributes and functional constraints, control blocks, data sets), with `--flat` one reference per line.
 
 `subscribe` takes a block or a group name without its instance number, picks a free instance, prints the decoded reports and releases the block on Ctrl-C.
 
@@ -170,7 +180,7 @@ sudo open61850-supervise --live eth1
 - SV publication sends sinusoids and periodic faults; arbitrary sample sources (replay, live measurements) are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
-- Tested against two IED families so far; reports of other IEDs are welcome.
+- Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers and publishers (model, reads, reports, the four control models, GOOSE, SV); reports of other IEDs are welcome.
 
 ## Development
 
@@ -179,7 +189,7 @@ python -m pip install pytest
 python -m pytest
 ```
 
-The tests need no network. The AF_PACKET capture tests run on Linux as root (`sudo python -m pytest tests/test_capture.py`); on another OS, `docker run --rm --privileged -v "$PWD":/src -w /src python:3.13-slim sh -c "pip install pytest && python -m pytest"`.
+The tests need no network. `tools/interop/run.sh` runs the interoperability tests against libiec61850's example programs in Docker (libiec61850 is only run there, as a peer, never linked or shipped). The AF_PACKET capture tests run on Linux as root (`sudo python -m pytest tests/test_capture.py`); on another OS, `docker run --rm --privileged -v "$PWD":/src -w /src python:3.13-slim sh -c "pip install pytest && python -m pytest"`.
 
 Maintainer notes (what the IED captures taught, design decisions) are in [AGENTS.md](AGENTS.md).
 

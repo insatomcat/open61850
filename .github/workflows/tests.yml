@@ -39,6 +39,13 @@ jobs:
       - run: python -m pytest
       - run: python -m pip install . && open61850-supervise --help
 
+  interop:
+    # libiec61850's example servers and publishers as peers (tools/interop).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: tools/interop/run.sh -v
+
   native:
     runs-on: ubuntu-latest
     steps:

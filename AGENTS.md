@@ -32,6 +32,8 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `mms/pdu.py` | Session/presentation envelope (`wrap`/`unwrap`), `ObjectName`, Read / Write / GetNameList / GetVariableAccessAttributes / GetNamedVariableListAttributes requests and responses, confirmed-Error, Reject, informationReport. Requests match IEDscout captures. |
 | `mms/client.py` | `MmsClient`: one receive thread, responses matched by invokeID (several requests in flight, from any thread, up to the negotiated `max_outstanding_calling`), informationReports to a callback and to listeners on the receive thread, typed errors (`DataAccessError`, `ServiceError`, `MmsReject`, `MmsTimeout`, `MmsConnectionError`). |
 | `mms/report.py` | Report decoding driven by the report's own OptFlds and inclusion bit string (data references, ConfRev, segmentation, reason codes); `OptFlds` / `TrgOps` / `ReasonCode` flag classes. |
+| `mms/reference.py` | `Reference` (ld, ln, path, fc): `LD/LN.DO.DA [FC]` <-> `LN$FC$DO$DA` in domain LD, `parse` takes both notations (`[FC]` suffix or `fc=`), `to_object_name` (MMS text goes through untouched), `data_set_object_name` (`LD/LLN0.DS1` -> `LLN0$DS1`). |
+| `mms/model.py` | `discover`: GetNameList of variables and variable lists per domain (plus GetVariableAccessAttributes per LN with `types=True`) into `ServerModel` / `LogicalDevice` / `LogicalNode`; leaves, data objects, control blocks (FC BR RP LG GO GS MS US), data sets, `type_of`, `resolve` (finds the FC, refuses an ambiguous one). |
 | `mms/types.py` | GetVariableAccessAttributes type descriptions (`StructureType`, `ArrayType`, `PrimitiveType`) and `label()`, which names every leaf of a value after its type (`cVal.mag.f`). |
 | `mms/rcb.py` | RCB status (RptEna, Resv/ResvTms, Owner, RptID, DatSet), `usable` / `find_free` among instances (`group_instances` strips the trailing number): free ones first, then the ones our own address reserved without enabling; `enable` reserves a BRCB with ResvTms first (the VMC7 refuses configuration writes otherwise; edition 1 BRCBs have no ResvTms), then typed, checked writes; `disable` also releases (ResvTms = 0 or Resv = FALSE). |
 | `mms/control.py` | `operate()`: ctlModel read from `CF`, then Oper (direct), SBO read + Oper, or SBOw + Oper; enhanced security waits for the CommandTermination. Refusals raise `ControlError` with the `LastApplError` (AddCause names per 7-2 Ed2). `Origin` defaults to station-control (orCat 2). Report listeners carry the LastApplError / termination to the waiting call. |
@@ -95,6 +97,20 @@ instances unless it releases them (`rcb.disable`) or reclaims its own
 
 `rcb.enable` writes in this order, each write checked: ResvTms, IntgPd,
 TrgOps, OptFlds, PurgeBuf, EntryID=0, RptEna, then GI.
+
+## Interoperability with libiec61850
+
+`tools/interop/run.sh` builds libiec61850 (tag pinned in
+`tools/interop/Dockerfile`) and runs `tests/test_interop_libiec61850.py`
+in a privileged container; CI does the same. It checks, against
+`server_example_basic_io`, `server_example_control`,
+`server_example_goose` and `sv_publisher_example`: association, model
+discovery with types, reads in both notations, data set members, a
+buffered report control block enabled then released, direct and SBO
+controls with normal and enhanced security (and a refused one with its
+LastApplError), GOOSE (two GoCBs, supervised without anomaly) and SV. What
+the examples taught: libiec61850 lists names in alphabetical order (FC CF
+before ST), and its GOOSE example updates its values every second.
 
 ## The native SV engine (`native/`)
 

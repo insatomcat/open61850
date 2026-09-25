@@ -11,6 +11,15 @@
   ndsCom, smpSynch. `BusSupervisor` takes raw frames.
 - `open61850-supervise`: supervision of a capture file or, on Linux, of an
   interface.
+- `open61850.mms.reference`: IEC 61850 references (`LD/LN.DO.DA [FC]`);
+  every client method, `operate` and the command line take them as well as
+  MMS names.
+- `open61850.mms.model`: `discover` reads the server's data model (logical
+  devices and nodes, data objects and attributes with their FCs, control
+  blocks, data sets, optionally types); `resolve` finds a reference's FC.
+- `open61850-mms browse`: the data model as a tree or one reference per line.
+- Interoperability tests against libiec61850's example programs
+  (`tools/interop/run.sh`, and CI).
 
 ## 0.3.0
 
