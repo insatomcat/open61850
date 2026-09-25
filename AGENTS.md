@@ -38,6 +38,7 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `mms/rcb.py` | RCB status (RptEna, Resv/ResvTms, Owner, RptID, DatSet), `usable` / `find_free` among instances (`group_instances` strips the trailing number): free ones first, then the ones our own address reserved without enabling; `enable` reserves a BRCB with ResvTms first (the VMC7 refuses configuration writes otherwise; edition 1 BRCBs have no ResvTms), then typed, checked writes; `disable` also releases (ResvTms = 0 or Resv = FALSE). |
 | `mms/control.py` | `operate()`: ctlModel read from `CF`, then Oper (direct), SBO read + Oper, or SBOw + Oper; enhanced security waits for the CommandTermination. Refusals raise `ControlError` with the `LastApplError` (AddCause names per 7-2 Ed2). `Origin` defaults to station-control (orCat 2). Report listeners carry the LastApplError / termination to the waiting call. |
 | `mms/__main__.py` | The `open61850-mms` command line. |
+| `goose_publisher.py` | `GooseControl` (identity, addresses, min/max time, TAL factor), `GoosePublisher`: a thread waits on a condition; `publish` makes a new state (stNum + 1, sqNum 0, t = now) sent at once, then waits min, 2 min... max, max on a schedule that does not drift; TAL = 3 x the wait, like libiec61850 (`mms_goose.c`). `send` can replace the socket (tests). `open61850-goose` reads new states on stdin. |
 | `comtrade.py` | COMTRADE reader (C37.111 1991/1999/2013, ASCII, BINARY, BINARY32, FLOAT32; `.cff` not read): `analog()` in primary or secondary values (the `ps` field and the ratio), missing samples NaN (99999, empty, 0x8000, 0x80000000, NaN), `times()` from the rates or the timestamps, `resample` (linear, NaN as 0). Checked against the `comtrade` package from PyPI on the four formats: same values within float32 rounding, same digital states and times. |
 | `sv_publisher.py` | SV publication. `Wave` (value = offset + amplitude sin(2 pi f t + phase), times scale, rounded half to even), `Fault` (periodic, aligned on the UNIX epoch, same schedule as PO's rt_sender), `SvStream`, `three_phase` (6I3U / 4I4U, phase A overridable), `build_template` (a frame encoded once, offsets of smpCnt and samples found by walking the TLVs), `render_frame` (the reference renderer), `Publisher` (native engine, or a Python thread). `Playback`: INT32 rows (and optional qualities) sent instead of the waves and fault from sample `start_second * rate + start_smp`, optionally every `repeat_s`; `start_second=None` is set by `Publisher.start`; `from_sv_frames` (captured stream, recent smpCnt skipped), `from_comtrade` (resampled). |
 
@@ -109,7 +110,10 @@ in a privileged container; CI does the same. It checks, against
 discovery with types, reads in both notations, data set members, a
 buffered report control block enabled then released, direct and SBO
 controls with normal and enhanced security (and a refused one with its
-LastApplError), GOOSE (two GoCBs, supervised without anomaly) and SV. What
+LastApplError), GOOSE (two GoCBs, supervised without anomaly), SV, and
+libiec61850's GOOSE subscriber reading our GoosePublisher (every message
+valid, values and TAL as sent). On `lo` each frame arrives twice and
+libiec61850 flags the second copy (same sqNum) INVALID. What
 the examples taught: libiec61850 lists names in alphabetical order (FC CF
 before ST), and its GOOSE example updates its values every second.
 

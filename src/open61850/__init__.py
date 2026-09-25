@@ -23,6 +23,7 @@ With I/O:
   reports, report control blocks, controls).
 - :mod:`open61850.capture`: GOOSE and SV capture on Linux (AF_PACKET ring).
 - :mod:`open61850.pcap`: pcap and pcapng files, read and written.
+- :mod:`open61850.goose_publisher`: GOOSE publication with the 8-1 retransmission scheme.
 - :mod:`open61850.sv_publisher`: Sampled Values publication (streams, waveforms,
   faults); real-time sending with the ``open61850-rt`` engine (``open61850[rt]``).
 

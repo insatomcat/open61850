@@ -12,7 +12,10 @@ capture on ``lo`` and need Linux and root.
   control models, SPCSO9 whose handler refuses every command;
 - ``server_example_goose`` (port 102, GOOSE on ``lo``): gcbEvents and
   gcbAnalogValues, whose AnIn1 changes every second;
-- ``sv_publisher_example lo``: two ASDUs (svpub1, svpub2) every 50 ms.
+- ``sv_publisher_example lo``: two ASDUs (svpub1, svpub2) every 50 ms;
+- ``goose_subscriber_example lo``: prints what it receives for
+  simpleIOGenericIO/LLN0$GO$gcbAnalogValues (APPID 1000), which our
+  GoosePublisher sends.
 """
 
 from __future__ import annotations
@@ -232,3 +235,38 @@ def test_sv_publisher_supervised() -> None:
         events += sup.feed(pdu, frame.timestamp, eth)
     assert {e.kind for e in events} == {EventKind.NEW_STREAM}
     assert sup.streams["svpub1"].samples == len(frames)
+
+
+@needs_raw
+def test_libiec61850_subscribes_to_our_goose() -> None:
+    import re
+    import signal
+
+    from open61850.data import BoolData
+    from open61850.goose_publisher import GooseControl, GoosePublisher
+
+    subscriber = subprocess.Popen(["goose_subscriber_example", "lo"], stdout=subprocess.PIPE, text=True)
+    control = GooseControl(f"{LD}/LLN0$GO$gcbAnalogValues", f"{LD}/LLN0$AnalogValues", app_id=1000,
+                           dst_mac="01:0c:cd:01:00:01", src_mac="02:00:00:00:00:01", min_time_ms=20, max_time_ms=200)
+    try:
+        time.sleep(0.5)  # the receiver thread starts
+        with GoosePublisher("lo", control, [FloatData(1.5), BoolData(False)]) as publisher:
+            publisher.start()
+            time.sleep(0.5)
+            publisher.publish([FloatData(-2.25), BoolData(True)])
+            time.sleep(0.5)
+    finally:
+        subscriber.send_signal(signal.SIGINT)  # a clean exit flushes its output
+        out, _ = subscriber.communicate(timeout=5)
+    # On lo every frame arrives twice: libiec61850 flags the second copy (same sqNum) INVALID.
+    first: dict[tuple[int, int], tuple[bool, str, int]] = {}
+    for block in out.split("GOOSE event:")[1:]:
+        st, sq = (int(x) for x in re.search(r"stNum: (\d+) sqNum: (\d+)", block).groups())
+        valid = "message is valid" in block
+        data = re.search(r"allData: (.*)", block).group(1)
+        ttl = int(re.search(r"timeToLive: (\d+)", block).group(1))
+        first.setdefault((st, sq), (valid, data, ttl))
+    assert (1, 0) in first and (2, 3) in first  # repetitions 20, 40, 80 ms after the change
+    assert all(valid for valid, _data, _ttl in first.values())
+    assert first[(1, 0)][1] == "{1.500000,false}" and first[(2, 0)][1] == "{-2.250000,true}"
+    assert [first[(2, n)][2] for n in range(4)] == [60, 120, 240, 480]

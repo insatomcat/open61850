@@ -24,6 +24,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.mms.rcb` | Report control blocks: status, free instance, reservation (edition 1 and 2 BRCBs, URCBs), enabling with checked writes, release |
 | `open61850.mms.control` | Controls: direct and select-before-operate, normal and enhanced security (waits for the CommandTermination, reports the LastApplError AddCause) |
 | `open61850.goose` | GOOSE PDUs and frames (IEC 61850-8-1) |
+| `open61850.goose_publisher` | GOOSE publication: a new state sent at once then repeated after min time, doubling up to max time, timeAllowedtoLive three times the wait (as libiec61850) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
 | `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
 | `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
@@ -36,7 +37,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.pcap` | pcap and pcapng files (Wireshark, tcpdump), on any OS: reading, and writing classic pcap with nanosecond timestamps |
 | `open61850.ber` | ASN.1 BER primitives |
 
-Only `open61850.mms`, `open61850.capture` and the `Publisher` of `open61850.sv_publisher` do network I/O; `open61850.pcap` reads and writes files. The public names of each module are those of its `__all__`.
+Only `open61850.mms`, `open61850.capture` and the publishers (`GoosePublisher`, SV `Publisher`) do network I/O; `open61850.pcap` reads and writes files. The public names of each module are those of its `__all__`.
 
 ## Examples
 
@@ -123,6 +124,20 @@ print("\n".join(bus.summary()))
 
 `GooseSupervisor` and `SvSupervisor` take decoded messages and a reception time, and keep only state: an application can feed them from its own receive loop.
 
+Publish a GOOSE control block, as a protection relay would (Linux, root):
+
+```python
+from open61850.data import BoolData
+from open61850.goose_publisher import GooseControl, GoosePublisher
+
+control = GooseControl("IED01_LD0/LLN0$GO$gcbTrip", "IED01_LD0/LLN0$DS_TRIP", app_id=0x0001,
+                       dst_mac="01:0c:cd:01:00:01", src_mac="02:00:00:00:00:01", min_time_ms=4, max_time_ms=1000)
+with GoosePublisher("eth1", control, [BoolData(False)]) as pub:
+    pub.start()                      # stNum 1, repeated every second once settled
+    ...
+    pub.publish([BoolData(True)])    # trip: stNum 2, sent at once, then after 4, 8, 16... ms
+```
+
 Publish Sampled Values, as a merging unit or a simulator would (Linux, root):
 
 ```python
@@ -182,6 +197,13 @@ sudo open61850-sv eth1 02:00:00:00:00:01 01:0c:cd:04:00:01 MU01_SV1 --appid 0x40
 `open61850-sv` publishes one SV stream until stopped (`--duration` to stop by itself, `--dump` to print one frame). `--replay-pcap FILE --replay-svid ID` replays a captured stream, `--comtrade FILE.cfg --comtrade-channels IA,IB,IC,,,,VA,VB,VC` a fault record, with `--replay-delay` and `--replay-repeat` in seconds.
 
 ```bash
+echo true | sudo open61850-goose eth1 02:00:00:00:00:01 01:0c:cd:01:00:01 'IED01_LD0/LLN0$GO$gcbTrip' \
+  'IED01_LD0/LLN0$DS_TRIP' false --appid 0x0001 --vlan-id 100
+```
+
+`open61850-goose` publishes one GOOSE control block with the initial values given, then one new state per line read on standard input.
+
+```bash
 open61850-supervise capture.pcapng --events --sample-rate 4800
 sudo open61850-supervise --live eth1
 ```
@@ -190,11 +212,11 @@ sudo open61850-supervise --live eth1
 
 ## Scope and limits
 
-- No MMS server; GOOSE is encoded, decoded and supervised, but publishing it (retransmission scheme) is up to the application.
+- No MMS server.
 - SV publication sends sinusoids, periodic faults and recorded samples (captures, COMTRADE); samples computed live by the application are to come.
 - Not implemented: file services, log control blocks and journals, setting groups, IEC 62351 security.
 - The association proposes fixed calling/called AP titles and selectors by default (`AssociationParameters` changes them).
-- Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers and publishers (model, reads, reports, the four control models, GOOSE, SV); reports of other IEDs are welcome.
+- Tested against two IED families (Schneider VMC7, ABB SSC600) and, in CI, against libiec61850's example servers, publishers and subscriber (model, reads, reports, the four control models, GOOSE both ways, SV); reports of other IEDs are welcome.
 
 ## Development
 

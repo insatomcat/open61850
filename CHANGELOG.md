@@ -24,6 +24,10 @@
   once or periodically, from a captured stream (`Playback.from_sv_frames`)
   or a COMTRADE record (`Playback.from_comtrade`); `open61850-sv
   --replay-pcap` and `--comtrade`. Both engines; `open61850-rt` 0.4.0.
+- `open61850.goose_publisher`: GOOSE publication with the 8-1 retransmission
+  scheme (min time doubling up to max time, TAL three times the wait);
+  `open61850-goose` publishes from the command line. libiec61850's GOOSE
+  subscriber reads it in the interoperability tests.
 - `open61850.comtrade`: COMTRADE records read (1991, 1999, 2013; ASCII and
   binary formats) and resampled.
 
