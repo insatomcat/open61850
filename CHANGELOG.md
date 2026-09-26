@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-09-26)
 
 - GOOSE strict decoding, for protection use: `goose.decode_goose_pdu(...,
   strict=True)`, `open61850-core`'s `decode_pdu_strict` and
