@@ -1,13 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-09-26)
 
 - `open61850-core`, a Rust crate in the `native/` workspace: process bus
   codecs for real-time callers (`no_std`, no allocation, no unsafe code).
   Sampled Values decoding, GOOSE encoding and decoding, MMS `Data` values
   as a flat preorder sequence. Each codec accepts what the Python codec
-  accepts and writes the octets it writes; tests compare them on random and
-  mutated input, and fuzzed.
+  accepts and writes the octets it writes: tests compare them on random and
+  mutated input, and the decoders and the encoder are fuzzed.
 - `libopen61850`, the C API of these codecs (`native/capi`, header
   `open61850.h`): no allocation, no state, return codes, decoded strings
   pointing into the caller's frame. Tested from C under ASan and UBSan.
