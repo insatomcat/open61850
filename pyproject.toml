@@ -28,7 +28,7 @@ classifiers = [
 
 [project.optional-dependencies]
 # The real-time Sampled Values engine (Rust, Linux wheels).
-rt = ["open61850-rt==0.8.1; sys_platform == 'linux'"]
+rt = ["open61850-rt==0.9.0; sys_platform == 'linux'"]
 
 [project.urls]
 Repository = "https://github.com/insatomcat/open61850"

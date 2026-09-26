@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-09-26)
 
 - `GoosePublisher.publish(values, send_now=True)`: the caller sends the
   first message of the new state before returning, and the publisher's
