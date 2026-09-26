@@ -256,7 +256,7 @@ sudo open61850-supervise --live eth1
 
 ## More examples
 
-[`examples/`](examples) has short programs, each runnable as it is and run in CI against libiec61850:
+[`examples/`](https://github.com/insatomcat/open61850/tree/main/examples) has short programs, each runnable as it is and run in CI against libiec61850:
 
 | Example | What it does |
 |---------|--------------|
@@ -277,10 +277,10 @@ python -m pytest
 
 The tests need no network. `tools/interop/run.sh` runs the interoperability tests against libiec61850's example programs in Docker (libiec61850 is only run there, as a peer, never linked or shipped). The AF_PACKET capture tests run on Linux as root (`sudo python -m pytest tests/test_capture.py`); on another OS, `docker run --rm --privileged -v "$PWD":/src -w /src python:3.13-slim sh -c "pip install pytest && python -m pytest"`.
 
-How to contribute is in [CONTRIBUTING.md](CONTRIBUTING.md); maintainer notes (what the IED captures taught, design decisions) in [AGENTS.md](AGENTS.md).
+How to contribute is in [CONTRIBUTING.md](https://github.com/insatomcat/open61850/blob/main/CONTRIBUTING.md); maintainer notes (what the IED captures taught, design decisions) in [AGENTS.md](https://github.com/insatomcat/open61850/blob/main/AGENTS.md).
 
 ## License
 
 Copyright 2026 Florent Carli
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/insatomcat/open61850/blob/main/LICENSE) for the full text.
