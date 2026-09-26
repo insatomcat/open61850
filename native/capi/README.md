@@ -9,9 +9,9 @@ The codecs accept the input open61850's Python codecs accept and write the octet
 Each GitHub release carries `libopen61850-VERSION-ARCH-linux-gnu.tar.gz` for x86_64 and aarch64, built on glibc 2.17: `include/`, `lib/` (static library, shared library `libopen61850.so.0.MINOR` while the version is 0.x), and two pkg-config files.
 
 ```sh
-curl -LO https://github.com/insatomcat/open61850/releases/download/v0.8.0/libopen61850-0.8.0-x86_64-linux-gnu.tar.gz
-tar xzf libopen61850-0.8.0-x86_64-linux-gnu.tar.gz
-export PKG_CONFIG_PATH=$PWD/libopen61850-0.8.0-x86_64-linux-gnu/lib/pkgconfig
+curl -LO https://github.com/insatomcat/open61850/releases/download/v0.8.1/libopen61850-0.8.1-x86_64-linux-gnu.tar.gz
+tar xzf libopen61850-0.8.1-x86_64-linux-gnu.tar.gz
+export PKG_CONFIG_PATH=$PWD/libopen61850-0.8.1-x86_64-linux-gnu/lib/pkgconfig
 cc prog.c $(pkg-config --cflags --libs open61850-static)   # static
 cc prog.c $(pkg-config --cflags --libs open61850)          # shared
 ```

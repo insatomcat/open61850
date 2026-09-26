@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1 (2026-09-26)
+
+- The READMEs published on PyPI (open61850, open61850-rt) link to GitHub
+  with absolute URLs; their relative links led nowhere there.
+
 ## 0.8.0 (2026-09-26)
 
 - GOOSE strict decoding, for protection use: `goose.decode_goose_pdu(...,
