@@ -91,3 +91,25 @@ def test_parse_values() -> None:
     ]
     with pytest.raises(ValueError):
         parse_values("maybe")
+
+
+def test_send_now_sends_from_the_caller_then_the_thread_repeats() -> None:
+    recorder = Recorder()
+    with GoosePublisher("unused", CONTROL, [BoolData(False)], send=recorder) as pub:
+        pub.publish([BoolData(True)], send_now=True)  # not started: the thread will send it
+        assert recorder.decoded() == []
+        pub.start()
+        time.sleep(0.05)
+        count = len(recorder.decoded())
+        pub.publish([BoolData(False)], send_now=True)
+        sent = recorder.decoded()
+        # the new state went out before publish returned, from this thread
+        assert len(sent) == count + 1
+        assert (sent[-1][1].st_num, sent[-1][1].sq_num, sent[-1][1].all_data) == (2, 0, [BoolData(False)])
+        time.sleep(0.2)
+    messages = [m for _t, m in recorder.decoded()[count:]]
+    assert [(m.st_num, m.sq_num) for m in messages[:4]] == [(2, 0), (2, 1), (2, 2), (2, 3)]
+    # Never early on the schedule counted from the first message (10 ms, then 30 ms); a late runner
+    # makes the next ones leave at once to catch up, as in test_retransmission_scheme_and_supervision.
+    times = [t for t, _m in recorder.decoded()[count:count + 3]]
+    assert times[1] - times[0] >= 0.0095 and times[2] - times[0] >= 0.0295

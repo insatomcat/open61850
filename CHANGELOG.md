@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `GoosePublisher.publish(values, send_now=True)`: the caller sends the
+  first message of the new state before returning, and the publisher's
+  thread only repeats it. A protection trips from the thread that decided,
+  without waiting for another thread to be scheduled.
 - `PacketCapture(..., low_latency=True)` reads a TPACKET_V2 ring: each
   frame reaches Python as soon as the kernel wrote it, where a TPACKET_V3
   block waits for a timer counted in kernel ticks (8.4 ms in the median,

@@ -109,6 +109,9 @@ class GoosePublisher:
         self._t = datetime.now(timezone.utc)
         self.frames_sent = 0
         self.send_errors = 0
+        # The repetition schedule, shared by the thread and publish(send_now=True).
+        self._intervals: Iterator[int] = retransmission_intervals(control.min_time_ms, control.max_time_ms)
+        self._due = time.monotonic()
 
     # --- state -----------------------------------------------------------------
 
@@ -129,14 +132,27 @@ class GoosePublisher:
         with self._cond:
             return list(self._values)
 
-    def publish(self, values: Sequence[IECData]) -> None:
-        """A new state: sent at once, then repeated fast, then slower."""
+    def publish(self, values: Sequence[IECData], *, send_now: bool = False) -> None:
+        """A new state: sent at once, then repeated fast, then slower.
+
+        The publisher's thread sends it, when it next runs. With ``send_now``
+        (once started) the caller sends the first message itself, before
+        returning, and the thread only repeats it: a protection trips from the
+        thread that decided, without waiting for another thread to be scheduled.
+        """
         values = list(values)
         with self._cond:
             if len(values) != len(self._values):
                 raise ValueError(f"the data set has {len(self._values)} entries, got {len(values)}")
             self._values = values
-            self._changed = True
+            if send_now and self._send is not None and self._thread is not None:
+                self._changed = False
+                self._new_state()
+                self._intervals = retransmission_intervals(self.control.min_time_ms, self.control.max_time_ms)
+                self._due = time.monotonic()
+                self._send_due()
+            else:
+                self._changed = True
             self._cond.notify()
 
     def _new_state(self) -> None:
@@ -188,25 +204,27 @@ class GoosePublisher:
         except OSError:
             self.send_errors += 1
 
+    def _send_due(self) -> None:
+        """Send the message now due and schedule the next (the condition held)."""
+        interval = next(self._intervals)
+        self._transmit(interval)
+        self._due += interval / 1000
+        self._next_sq()
+
     def _run(self) -> None:
         c = self.control
-        intervals = retransmission_intervals(c.min_time_ms, c.max_time_ms)
-        due = time.monotonic()
         with self._cond:
             while not self._stopping:
                 if self._changed:
                     self._changed = False
                     self._new_state()
-                    intervals = retransmission_intervals(c.min_time_ms, c.max_time_ms)
-                    due = time.monotonic()
-                wait = due - time.monotonic()
+                    self._intervals = retransmission_intervals(c.min_time_ms, c.max_time_ms)
+                    self._due = time.monotonic()
+                wait = self._due - time.monotonic()
                 if wait > 0 and not self._changed:
                     self._cond.wait(wait)
                     continue
-                interval = next(intervals)
-                self._transmit(interval)
-                due += interval / 1000
-                self._next_sq()
+                self._send_due()
 
     def __enter__(self) -> GoosePublisher:
         return self
