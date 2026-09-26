@@ -306,6 +306,14 @@ host's own SV streams through on a NIC that strips tags; `ethertype_filter`
 checks both positions instead. On `lo` every frame shows up twice
 (`PACKET_OUTGOING`): pass `outgoing=False`.
 
+A TPACKET_V3 block reaches user space when full or when its timer, counted
+in kernel ticks, expires. On a SEAPATH hypervisor (HZ=250, isolated CPU,
+the ~17,000 frames/s of a real process bus) frames waited 8.4 ms in the
+median and up to 16 ms before Python saw them. `low_latency=True` reads a
+TPACKET_V2 ring of 2048-octet slots instead, each visible as soon as it is
+written: 7 us in the median, 0.1 ms at most, nothing dropped. PO measures
+with kernel timestamps and keeps the block ring; a protection needs V2.
+
 ## Supervision
 
 The ideas come from a private GOOSE/SV package of a protection project,

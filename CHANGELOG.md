@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `PacketCapture(..., low_latency=True)` reads a TPACKET_V2 ring: each
+  frame reaches Python as soon as the kernel wrote it, where a TPACKET_V3
+  block waits for a timer counted in kernel ticks (8.4 ms in the median,
+  up to 16 ms, on a process bus host). For a protection acting on each
+  sample; the default stays the block ring.
+
 ## 0.8.1 (2026-09-26)
 
 - The READMEs published on PyPI (open61850, open61850-rt) link to GitHub

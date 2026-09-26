@@ -80,6 +80,29 @@ def test_read_block_restores_tags_and_timestamps() -> None:
     assert [f.outgoing for f in capture.read_block(block, 0, outgoing=False)] == [False, False]
 
 
+def _slot_v2(data: bytes, status: int, tci: int, tpid: int, outgoing: bool) -> bytes:
+    """A TPACKET_V2 ring slot, as the kernel fills it."""
+    mac = 32 + 20 + 14  # header, sockaddr_ll, padding so that the network header is aligned
+    header = struct.pack("=IIIHHIIHH4x", capture.TP_STATUS_USER | status, len(data), len(data), mac, mac + 14,
+                         1790000007, 250_000_000, tci, tpid)
+    sll = struct.pack("=HHiHBB8s", 17, 0, 1, 1, capture.PACKET_OUTGOING if outgoing else 2, 6, b"")
+    slot = header + sll + bytes(mac - 32 - len(sll)) + data
+    return slot + bytes(2048 - len(slot))
+
+
+def test_read_frame_v2_restores_tags_and_timestamps() -> None:
+    valid = capture.TP_STATUS_VLAN_VALID | capture.TP_STATUS_VLAN_TPID_VALID
+    ring = _slot_v2(_frame(0x88BA), valid, 0xA069, 0x8100, False) + _slot_v2(_frame(0x88B8, vlan=305), 0, 0, 0, True)
+    first = capture.read_frame_v2(ring, 0)
+    assert first is not None
+    assert first.data == _frame(0x88BA)[:12] + bytes.fromhex("8100a069") + _frame(0x88BA)[12:]
+    assert first.timestamp == pytest.approx(1790000007.25)
+    assert not first.outgoing
+    second = capture.read_frame_v2(ring, 2048)
+    assert second is not None and second.outgoing and second.data == _frame(0x88B8, vlan=305)
+    assert capture.read_frame_v2(ring, 2048, outgoing=False) is None
+
+
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AF_PACKET is Linux only")
 
 
@@ -93,9 +116,10 @@ def _raw_sender() -> socket.socket:
 
 
 @linux_only
-def test_capture_on_loopback() -> None:
+@pytest.mark.parametrize("low_latency", [False, True], ids=["v3", "v2"])
+def test_capture_on_loopback(low_latency: bool) -> None:
     sender = _raw_sender()
-    with sender, capture.PacketCapture("lo", timeout=0.5, outgoing=False, promiscuous=False) as cap:
+    with sender, capture.PacketCapture("lo", timeout=0.5, outgoing=False, promiscuous=False, low_latency=low_latency) as cap:
         frames = [_frame(0x88BA, vlan=105, body=b"\x40\x00\x00\x08" + bytes(4)), _frame(0x0800), _frame(0x88B8)]
         before = time.time()
         for frame in frames:
@@ -115,3 +139,18 @@ def test_capture_on_loopback() -> None:
         while (got := cap.recv()) is not None:
             received.append(got.data)
         assert received == [frames[2]]
+
+
+@linux_only
+def test_low_latency_hands_each_frame_over_at_once() -> None:
+    """Each frame reaches the reader at once (no block timer), and the ring of 256 slots wraps around."""
+    sender = _raw_sender()
+    with sender, capture.PacketCapture("lo", (0x88BA,), timeout=1.0, outgoing=False, promiscuous=False,
+                                       buffer_bytes=0, low_latency=True) as cap:
+        delays = []
+        for n in range(600):
+            sender.send(_frame(0x88BA, body=n.to_bytes(8, "big")))
+            got = cap.recv()
+            assert got is not None and got.data[-8:] == n.to_bytes(8, "big")
+            delays.append(time.time() - got.timestamp)
+        assert sorted(delays)[300] < 0.001
