@@ -164,14 +164,15 @@ def test_brcb_gi_change_integrity_and_release(server: MmsServer, model: IedModel
     with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
         free = rcb.find_free(client, BRCBS)
         assert free.rcb == BRCBS[0]
-        rcb.enable(client, free.rcb, rcb.RcbSettings(intg_pd_ms=300, purge_buf=True))
+        # IntgPd well beyond the GI and change windows below, which a slow CI runner stretches.
+        rcb.enable(client, free.rcb, rcb.RcbSettings(intg_pd_ms=600, purge_buf=True))
         (gi,) = _reports(q, 0.1)
         assert gi.rpt_id == f"{PROT}/LLN0$BR$brcbTrip01" and _reasons(gi) == [["general_interrogation"]] * 2
         model.set(TRIP, True)
         model.set(f"{PROT}/PTRC1.Tr.q[ST]", 0x0800)  # q is not in the data set: nothing
         (change,) = _reports(q, 0.1)
         assert [(e.index, e.value) for e in change.entries] == [(0, BoolData(True))] and _reasons(change) == [["data_change"]]
-        integrity = _reports(q, 0.35)
+        integrity = _reports(q, 0.65)
         assert integrity and _reasons(integrity[0]) == [["integrity"]] * 2
         seq = [gi.seq_num, change.seq_num, integrity[0].seq_num]
         assert seq == [0, 1, 2] and int.from_bytes(change.entry_id, "big") == int.from_bytes(gi.entry_id, "big") + 1
