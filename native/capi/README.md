@@ -37,6 +37,7 @@ Rust is needed to build the library, not to use it: a C program links the `.a` a
 - An output array too small gives `O61850_ERR_BUFFER`, with the first `capacity` elements filled and the count needed returned; encoding with `out_size` 0 returns the size needed.
 - For a refused frame, `o61850_frame_info` still holds the MAC addresses and the VLAN tag, so a receiver can recognise its own emission.
 - Frame decoders start at the destination MAC; `_payload` variants start at the APPID field, the octets after the EtherType.
+- GOOSE decoding is lenient by default, for diagnosis. A protection function uses `o61850_goose_decode_frame_strict`, which also refuses what IEC 61850-8-1 forbids (field order and form, string sizes, INT32U counters, numDatSetEntries against the entries, Data sizes).
 - allData values are an array in preorder: a `O61850_DATA_STRUCTURE` or `O61850_DATA_ARRAY` of `n` members is followed by its `n` members.
 - A Rust panic (a bug) is caught and returned as `O61850_ERR_INTERNAL`.
 

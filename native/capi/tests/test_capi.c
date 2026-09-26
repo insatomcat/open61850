@@ -246,8 +246,28 @@ static void test_goose_decode(void)
     CHECK(m.gocb_ref.ptr == NULL && m.st_num == 0 && info.src_mac[5] == 0x01);
     memcpy(frame, GOOSE_FRAME, sizeof frame);
     memcpy(frame + 93, "\xa2\x03\x83\x05\x00", 5); /* a structure whose member runs past it */
-    CHECK_RC(o61850_goose_decode_frame(frame, sizeof frame, &info, &m), O61850_ERR_BER);
+    CHECK_RC(o61850_goose_decode_frame(frame, sizeof frame, &info, &m), O61850_ERR_DATA);
     CHECK_RC(o61850_goose_decode_frame(SV_FRAME, sizeof SV_FRAME, &info, &m), O61850_ERR_ETHERTYPE);
+
+    /* Strict decoding: the golden frame is conformant; deviations are refused by category. */
+    CHECK_RC(o61850_goose_decode_frame_strict(GOOSE_FRAME, sizeof GOOSE_FRAME, &info, &m), O61850_OK);
+    CHECK(m.st_num == 128 && m.entries == 2);
+    CHECK_RC(o61850_goose_decode_payload_strict(GOOSE_FRAME + 18, sizeof GOOSE_FRAME - 18, &info, &m), O61850_OK);
+    memcpy(frame, GOOSE_FRAME, sizeof frame);
+    frame[87] = 0x03; /* numDatSetEntries 2 -> 3 */
+    CHECK_RC(o61850_goose_decode_frame(frame, sizeof frame, &info, &m), O61850_OK);
+    CHECK_RC(o61850_goose_decode_frame_strict(frame, sizeof frame, &info, &m), O61850_ERR_DATA);
+    CHECK(m.gocb_ref.ptr == NULL && info.src_mac[5] == 0x01);
+    memcpy(frame, GOOSE_FRAME, sizeof frame);
+    frame[28] = 0xa0; /* gocbRef as [0] constructed */
+    CHECK_RC(o61850_goose_decode_frame(frame, sizeof frame, &info, &m), O61850_OK);
+    CHECK_RC(o61850_goose_decode_frame_strict(frame, sizeof frame, &info, &m), O61850_ERR_FIELD);
+    uint8_t longer[sizeof GOOSE_FRAME + 1]; /* Length covering one octet after the PDU */
+    memcpy(longer, GOOSE_FRAME, sizeof GOOSE_FRAME);
+    longer[sizeof GOOSE_FRAME] = 0;
+    longer[21] = 0x51;
+    CHECK_RC(o61850_goose_decode_frame(longer, sizeof longer, &info, &m), O61850_OK);
+    CHECK_RC(o61850_goose_decode_frame_strict(longer, sizeof longer, &info, &m), O61850_ERR_HEADER);
     CHECK_RC(o61850_goose_decode_frame(GOOSE_FRAME, 30, &info, &m), O61850_ERR_HEADER);
     CHECK_RC(o61850_goose_decode_frame(GOOSE_FRAME, sizeof GOOSE_FRAME, &info, NULL), O61850_ERR_NULL);
 }
@@ -293,6 +313,7 @@ static void test_mutations(void)
             accepted++;
             o61850_goose_values(m.all_data, values, 64, &count);
         }
+        o61850_goose_decode_frame_strict(exact, len, NULL, &m);
         if (len > 18) {
             o61850_sv_decode_payload(exact + 18, len - 18, NULL, NULL, asdus, 8, &count);
             o61850_goose_decode_payload(exact + 18, len - 18, NULL, &m);

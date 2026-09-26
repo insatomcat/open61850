@@ -26,7 +26,8 @@
 #define O61850_ERR_ETHERTYPE -2
 
 /**
- * The APPID header is truncated, or its Length is inconsistent.
+ * The APPID header is truncated, or its Length is inconsistent (strict
+ * GOOSE decoding: it covers octets after the PDU).
  */
 #define O61850_ERR_HEADER -3
 
@@ -36,7 +37,8 @@
 #define O61850_ERR_BER -4
 
 /**
- * A PDU field is missing, of the wrong size, or has an unexpected tag.
+ * A PDU field is missing, of the wrong size, or has an unexpected tag
+ * (strict GOOSE decoding: a header field outside what IEC 61850-8-1 allows).
  */
 #define O61850_ERR_FIELD -5
 
@@ -58,7 +60,9 @@
 /**
  * allData values to encode are invalid: unknown kind, NULL octets with a
  * non-zero length, a structure lacking members, nesting deeper than 32,
- * a bit string with more than 7 unused bits.
+ * a bit string with more than 7 unused bits. GOOSE decoding: broken BER
+ * inside allData; strict decoding, allData outside what IEC 61850-8-1
+ * allows, or other than numDatSetEntries values.
  */
 #define O61850_ERR_DATA -9
 
@@ -379,7 +383,9 @@ int32_t o61850_goose_encode_pdu(const o61850_goose_pdu *pdu,
 /**
  * Decode a GOOSE Ethernet frame (destination MAC first, with or without
  * one 802.1Q tag): header fields and the TLV structure of allData at any
- * depth, checked as open61850's Python decoder checks them.
+ * depth, checked as open61850's Python decoder checks them. This decoding
+ * is lenient, for diagnosis: a protection function should use
+ * `o61850_goose_decode_frame_strict`.
  *
  * `info` may be NULL; for a refused frame it holds the MAC addresses and
  * the VLAN tag when present (a receiver can recognise its own emission),
@@ -395,6 +401,27 @@ int32_t o61850_goose_decode_frame(const uint8_t *frame,
                                   o61850_goose_received *message);
 
 /**
+ * As `o61850_goose_decode_frame`, then refuse what IEC 61850-8-1 forbids.
+ * `O61850_ERR_HEADER`: octets after the PDU. `O61850_ERR_FIELD`: a field
+ * tag other than 80..8a and ab, fields out of order, gocbRef, datSet or
+ * goID longer than 129 characters or outside the VisibleString alphabet,
+ * gocbRef empty, t other than 8 octets, a counter above 32 bits,
+ * simulation or ndsCom other than one octet, allData missing.
+ * `O61850_ERR_DATA`: numDatSetEntries other than the number of entries,
+ * an allData value of another class or form than a Data, a BOOLEAN,
+ * float or time of the wrong size, a BIT STRING with no valid
+ * unused-bits octet, an empty INTEGER, a VisibleString outside its
+ * alphabet. Any depth and any definite length form are accepted.
+ *
+ * # Safety
+ * As `o61850_goose_decode_frame`.
+ */
+int32_t o61850_goose_decode_frame_strict(const uint8_t *frame,
+                                         size_t len,
+                                         o61850_frame_info *info,
+                                         o61850_goose_received *message);
+
+/**
  * As `o61850_goose_decode_frame`, from the APPID field (the octets after
  * the EtherType). `info` receives the APPID header only.
  *
@@ -405,6 +432,17 @@ int32_t o61850_goose_decode_payload(const uint8_t *payload,
                                     size_t len,
                                     o61850_frame_info *info,
                                     o61850_goose_received *message);
+
+/**
+ * As `o61850_goose_decode_frame_strict`, from the APPID field.
+ *
+ * # Safety
+ * As `o61850_goose_decode_frame`.
+ */
+int32_t o61850_goose_decode_payload_strict(const uint8_t *payload,
+                                           size_t len,
+                                           o61850_frame_info *info,
+                                           o61850_goose_received *message);
 
 /**
  * Read the allData values of a decoded message (its `all_data`) in

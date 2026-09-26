@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- GOOSE strict decoding, for protection use: `goose.decode_goose_pdu(...,
+  strict=True)`, `open61850-core`'s `decode_pdu_strict` and
+  `o61850_goose_decode_frame_strict` / `_payload_strict` in the C API
+  refuse what IEC 61850-8-1 forbids and the lenient decoding accepts:
+  octets after the PDU, fields out of order or of another class or form,
+  strings other than VisibleString129, t other than 8 octets, counters
+  above 32 bits, allData missing or with another count than
+  numDatSetEntries, Data of the wrong class, form or size. The lenient
+  decoding stays the default.
+- C API, GOOSE decoding: broken BER inside allData gives `O61850_ERR_DATA`
+  (was `O61850_ERR_BER`), an empty header counter `O61850_ERR_FIELD`, a
+  header Length leaving no room for a PDU `O61850_ERR_HEADER`.
+
 ## 0.7.0 (2026-09-26)
 
 - `open61850-core`, a Rust crate in the `native/` workspace: process bus

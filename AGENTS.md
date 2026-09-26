@@ -20,7 +20,7 @@ through `conftest.py`, no install needed), `tools/bench_sv_decode.py`.
 | `data.py` | MMS `Data` CHOICE (`BoolData` ... `RawData`), `encode_data` / `decode_data*`, UtcTime and binary-time helpers. `TimestampData.quality` keeps the TimeQuality octet, `FloatData.double` the width; float32 decodes to its shortest decimal. Unsigned values get a leading `00` when the high bit is set. |
 | `display.py` | Readable text of values (positions, octet strings). |
 | `ethernet.py` | Ethernet II / 802.1Q + APPID header: `parse_frame`, `build_frame`, `EthernetFrame`. |
-| `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields and on header counters above 64 bits (INT32U, read leniently). |
+| `goose.py` | `GoosePDU` (with `time_quality`), PDU and frame codec, `GooseDecodeError` on missing mandatory fields and on header counters above 64 bits (INT32U, read leniently). `strict=True` also refuses what 8-1 forbids (`_check_strict`: PDU ending with the APDU, fields in SEQUENCE order and form, VisibleString129, t on 8 octets, INT32U counters, one-octet booleans, allData present with numDatSetEntries entries, Data of the right class, form and size, at any depth), for protection use. |
 | `sv.py` | `SvPDU` / `SvAsdu` with every 9-2 / 61869-9 field (datSet, refrTm, smpRate, smpMod, gmIdentity), PDU and frame codec, INT32+quality sample helpers. `_asdu_fields` has a fast path (22 us per 2-ASDU frame on a Xeon Gold server, 9 us on a recent Mac: `tools/bench_sv_decode.py`). |
 | `quality.py` | `Quality` (7-3, 13-bit bit string) and `TimeQuality` (UtcTime octet) in readable form. |
 | `scl.py` | SCL reader: IEDs, ConnectedAP addresses, LDevice instances (ldName honoured), ReportControl blocks with their data sets and instance counts, DataSets with FCDA members as `Reference`s, GSEControl / SampledValueControl with their GSE / SMV addresses (APPID and VLAN-ID hexadecimal, MinTime/MaxTime), `GooseControlBlock.goose_control()` for the publisher. `load_model` / `ied_model` build a `ServerModel` from the DataTypeTemplates (DO, SDO, DA, BDA; arrays are leaves; indexed RCBs get their instances); `mms.model.compare` lists the differences. |
@@ -196,7 +196,9 @@ INTEGER beyond 64 bits reads as `Raw`), `goose` (`encode_pdu`,
 retransmission stay with the caller. `decode_pdu`, `decode_payload`,
 `decode_frame` return a `Received`: header fields found by tag number
 whatever their class and form, last occurrence winning, counters up to 64
-bits, allData checked, `values()` to read it). The engine exposes
+bits, allData checked, `values()` to read it; `decode_pdu_strict` and its
+`_payload` and `_frame` variants add the checks of `goose._check_strict`,
+in the same order, with the same messages (`Deviation`)). The engine exposes
 `decode_sv_pdu`, `decode_sv_frame`, `encode_goose_pdu`,
 `encode_goose_frame`, `decode_goose_pdu` and `decode_goose_frame` to Python
 for the tests.
@@ -213,7 +215,9 @@ forms the encoder never uses (fields of any class, padded high tag numbers,
 repeated and shuffled fields, counters with leading zeros or above 64
 bits, IA5 strings, floats and times of other sizes, INTEGERs beyond 64
 bits, 10 to 80 nested structures) and byte mutations: same refusals, same
-values. Docker on the dev Mac (`cargo run --release -p open61850-core
+values; its strict mode gives the same verdicts with the same messages,
+on the same corpus and on each deviation applied to conformant messages.
+Docker on the dev Mac (`cargo run --release -p open61850-core
 --example ...`): the 2-ASDU frame of `tools/bench_sv_decode.py` decodes,
 samples read, in about 97 ns (`bench_sv_decode`); a 168-byte trip GOOSE
 of 10 entries encodes in about 113 ns and decodes, values read, in about
@@ -231,7 +235,10 @@ functions return 0 or a negative `O61850_ERR_*`, allocate nothing, keep
 no state; decoded `o61850_bytes` point into the caller's frame; a too
 small output gives `O61850_ERR_BUFFER` with the size needed; a refused
 frame still reports its MACs and VLAN (own-echo filtering); a panic is
-caught as `O61850_ERR_INTERNAL`. allData values are `o61850_data` (kind +
+caught as `O61850_ERR_INTERNAL`. GOOSE refusals say where: broken BER
+inside allData is `O61850_ERR_DATA` (`DecodeError::AllData`), an empty
+counter `O61850_ERR_FIELD`, a header Length leaving no PDU
+`O61850_ERR_HEADER`. allData values are `o61850_data` (kind +
 union) in preorder, read in place by the encoder. `tests/run.sh` builds
 `tests/test_capi.c` with ASan and UBSan: frames written by the Python
 codecs, every return code, 200,000 mutations through every decoder; it
@@ -269,8 +276,12 @@ parity tests, byte mutations of all) and 200,000 random GOOSE messages:
   entries present, VisibleString alphabet, fields in order and in context
   class, 32-bit counters, simulation and ndsCom on one octet, t on 8
   octets, Data sizes, nesting up to 8, nothing after the PDU inside
-  Length. Ours follows `goose.py` and accepts these; a strict mode for
-  protection use is an open question.
+  Length. The strict mode of `goose.py` and `open61850-core`
+  (`o61850_goose_decode_frame_strict` in C) now makes the same checks,
+  mapped to `O61850_ERR_HEADER`, `_FIELD` and `_DATA`, and keeps what is
+  conformant and theirs refuses: any nesting depth, lengths on 3 octets or
+  more, simulation and ndsCom absent (BOOLEAN DEFAULT FALSE). It also
+  applies VisibleString129 to datSet and goID.
 - Encoding: identical octets on every message, once ours wrote allData for
   an empty data set (`ab 00`): allData is not OPTIONAL in 8-1, libiec61850
   writes it too, and `goose.py` used to leave it out.

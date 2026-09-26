@@ -18,7 +18,7 @@ use std::slice;
 
 use open61850_core::data::{self, Data, DataList};
 use open61850_core::ethernet::{self, Address, Frame, Header, Vlan};
-use open61850_core::goose::{self, DecodeError, EncodeError, GoosePdu, Received};
+use open61850_core::goose::{self, DecodeError, Deviation, EncodeError, GoosePdu, Received};
 use open61850_core::sv::{self, SvError, SvPdu};
 use open61850_core::time::UtcTime;
 
@@ -28,11 +28,13 @@ pub const O61850_OK: i32 = 0;
 pub const O61850_ERR_NULL: i32 = -1;
 /// The frame carries another EtherType, or is too short to have one.
 pub const O61850_ERR_ETHERTYPE: i32 = -2;
-/// The APPID header is truncated, or its Length is inconsistent.
+/// The APPID header is truncated, or its Length is inconsistent (strict
+/// GOOSE decoding: it covers octets after the PDU).
 pub const O61850_ERR_HEADER: i32 = -3;
 /// Broken BER: a tag, a length, or a TLV running past its parent.
 pub const O61850_ERR_BER: i32 = -4;
-/// A PDU field is missing, of the wrong size, or has an unexpected tag.
+/// A PDU field is missing, of the wrong size, or has an unexpected tag
+/// (strict GOOSE decoding: a header field outside what IEC 61850-8-1 allows).
 pub const O61850_ERR_FIELD: i32 = -5;
 /// noASDU does not match the ASDUs present.
 pub const O61850_ERR_COUNT: i32 = -6;
@@ -42,7 +44,9 @@ pub const O61850_ERR_TOO_LARGE: i32 = -7;
 pub const O61850_ERR_BUFFER: i32 = -8;
 /// allData values to encode are invalid: unknown kind, NULL octets with a
 /// non-zero length, a structure lacking members, nesting deeper than 32,
-/// a bit string with more than 7 unused bits.
+/// a bit string with more than 7 unused bits. GOOSE decoding: broken BER
+/// inside allData; strict decoding, allData outside what IEC 61850-8-1
+/// allows, or other than numDatSetEntries values.
 pub const O61850_ERR_DATA: i32 = -9;
 /// Frame parameters out of range: VLAN id above 4095, priority above 7,
 /// APDU above 65527 octets.
@@ -681,6 +685,11 @@ fn decode_code(e: DecodeError) -> i32 {
         DecodeError::Header => O61850_ERR_HEADER,
         DecodeError::UnexpectedTag(_) | DecodeError::MissingField(_) | DecodeError::Time => O61850_ERR_FIELD,
         DecodeError::TooLarge(_) => O61850_ERR_TOO_LARGE,
+        DecodeError::EmptyCounter(_) => O61850_ERR_FIELD,
+        DecodeError::AllData(_) => O61850_ERR_DATA,
+        DecodeError::NotConformant(Deviation::OctetsAfterPdu(_)) => O61850_ERR_HEADER,
+        DecodeError::NotConformant(d) if d.in_all_data() => O61850_ERR_DATA,
+        DecodeError::NotConformant(_) => O61850_ERR_FIELD,
     }
 }
 
@@ -702,9 +711,70 @@ fn received(m: &Received<'_>) -> o61850_goose_received {
     }
 }
 
+/// # Safety
+/// As `o61850_goose_decode_frame`.
+unsafe fn goose_frame(
+    frame: *const u8,
+    len: usize,
+    info: *mut o61850_frame_info,
+    message: *mut o61850_goose_received,
+    strict: bool,
+) -> i32 {
+    guard(|| {
+        if message.is_null() {
+            return O61850_ERR_NULL;
+        }
+        message.write_bytes(0, 1);
+        let Some(raw) = input(frame, len) else { return O61850_ERR_NULL };
+        set(info, partial_info(raw));
+        if ethernet::ethertype(raw) != Some(ethernet::ETHERTYPE_GOOSE) {
+            return O61850_ERR_ETHERTYPE;
+        }
+        let decoded = if strict { goose::decode_frame_strict(raw) } else { goose::decode_frame(raw) };
+        match decoded {
+            Ok(Some((f, m))) => {
+                set(info, frame_info(&f));
+                message.write(received(&m));
+                O61850_OK
+            }
+            Ok(None) => O61850_ERR_HEADER,
+            Err(e) => decode_code(e),
+        }
+    })
+}
+
+/// # Safety
+/// As `o61850_goose_decode_frame`.
+unsafe fn goose_payload(
+    payload: *const u8,
+    len: usize,
+    info: *mut o61850_frame_info,
+    message: *mut o61850_goose_received,
+    strict: bool,
+) -> i32 {
+    guard(|| {
+        if message.is_null() {
+            return O61850_ERR_NULL;
+        }
+        message.write_bytes(0, 1);
+        let Some(raw) = input(payload, len) else { return O61850_ERR_NULL };
+        let decoded = if strict { goose::decode_payload_strict(raw) } else { goose::decode_payload(raw) };
+        match decoded {
+            Ok((header, m)) => {
+                set(info, header_info(&header));
+                message.write(received(&m));
+                O61850_OK
+            }
+            Err(e) => decode_code(e),
+        }
+    })
+}
+
 /// Decode a GOOSE Ethernet frame (destination MAC first, with or without
 /// one 802.1Q tag): header fields and the TLV structure of allData at any
-/// depth, checked as open61850's Python decoder checks them.
+/// depth, checked as open61850's Python decoder checks them. This decoding
+/// is lenient, for diagnosis: a protection function should use
+/// `o61850_goose_decode_frame_strict`.
 ///
 /// `info` may be NULL; for a refused frame it holds the MAC addresses and
 /// the VLAN tag when present (a receiver can recognise its own emission),
@@ -720,26 +790,31 @@ pub unsafe extern "C" fn o61850_goose_decode_frame(
     info: *mut o61850_frame_info,
     message: *mut o61850_goose_received,
 ) -> i32 {
-    guard(|| {
-        if message.is_null() {
-            return O61850_ERR_NULL;
-        }
-        message.write_bytes(0, 1);
-        let Some(raw) = input(frame, len) else { return O61850_ERR_NULL };
-        set(info, partial_info(raw));
-        if ethernet::ethertype(raw) != Some(ethernet::ETHERTYPE_GOOSE) {
-            return O61850_ERR_ETHERTYPE;
-        }
-        match goose::decode_frame(raw) {
-            Ok(Some((f, m))) => {
-                set(info, frame_info(&f));
-                message.write(received(&m));
-                O61850_OK
-            }
-            Ok(None) => O61850_ERR_HEADER,
-            Err(e) => decode_code(e),
-        }
-    })
+    goose_frame(frame, len, info, message, false)
+}
+
+/// As `o61850_goose_decode_frame`, then refuse what IEC 61850-8-1 forbids.
+/// `O61850_ERR_HEADER`: octets after the PDU. `O61850_ERR_FIELD`: a field
+/// tag other than 80..8a and ab, fields out of order, gocbRef, datSet or
+/// goID longer than 129 characters or outside the VisibleString alphabet,
+/// gocbRef empty, t other than 8 octets, a counter above 32 bits,
+/// simulation or ndsCom other than one octet, allData missing.
+/// `O61850_ERR_DATA`: numDatSetEntries other than the number of entries,
+/// an allData value of another class or form than a Data, a BOOLEAN,
+/// float or time of the wrong size, a BIT STRING with no valid
+/// unused-bits octet, an empty INTEGER, a VisibleString outside its
+/// alphabet. Any depth and any definite length form are accepted.
+///
+/// # Safety
+/// As `o61850_goose_decode_frame`.
+#[no_mangle]
+pub unsafe extern "C" fn o61850_goose_decode_frame_strict(
+    frame: *const u8,
+    len: usize,
+    info: *mut o61850_frame_info,
+    message: *mut o61850_goose_received,
+) -> i32 {
+    goose_frame(frame, len, info, message, true)
 }
 
 /// As `o61850_goose_decode_frame`, from the APPID field (the octets after
@@ -754,21 +829,21 @@ pub unsafe extern "C" fn o61850_goose_decode_payload(
     info: *mut o61850_frame_info,
     message: *mut o61850_goose_received,
 ) -> i32 {
-    guard(|| {
-        if message.is_null() {
-            return O61850_ERR_NULL;
-        }
-        message.write_bytes(0, 1);
-        let Some(raw) = input(payload, len) else { return O61850_ERR_NULL };
-        match goose::decode_payload(raw) {
-            Ok((header, m)) => {
-                set(info, header_info(&header));
-                message.write(received(&m));
-                O61850_OK
-            }
-            Err(e) => decode_code(e),
-        }
-    })
+    goose_payload(payload, len, info, message, false)
+}
+
+/// As `o61850_goose_decode_frame_strict`, from the APPID field.
+///
+/// # Safety
+/// As `o61850_goose_decode_frame`.
+#[no_mangle]
+pub unsafe extern "C" fn o61850_goose_decode_payload_strict(
+    payload: *const u8,
+    len: usize,
+    info: *mut o61850_frame_info,
+    message: *mut o61850_goose_received,
+) -> i32 {
+    goose_payload(payload, len, info, message, true)
 }
 
 fn to_c(value: Data<'_>) -> o61850_data {

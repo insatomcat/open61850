@@ -712,17 +712,26 @@ fn received_to_py<'py>(py: Python<'py>, m: &goose::Received<'_>) -> PyResult<Bou
     Ok(d)
 }
 
-/// The fields of an IECGoosePdu as a dict; ValueError when it is invalid (for tests).
+/// The fields of an IECGoosePdu as a dict; ValueError when it is invalid, or
+/// not conformant with `strict` (for tests).
 #[pyfunction]
-fn decode_goose_pdu<'py>(py: Python<'py>, apdu: &[u8]) -> PyResult<Bound<'py, PyDict>> {
-    let m = goose::decode_pdu(apdu).map_err(|e| PyValueError::new_err(e.to_string()))?;
+#[pyo3(signature = (apdu, strict=false))]
+fn decode_goose_pdu<'py>(py: Python<'py>, apdu: &[u8], strict: bool) -> PyResult<Bound<'py, PyDict>> {
+    let m = if strict { goose::decode_pdu_strict(apdu) } else { goose::decode_pdu(apdu) }
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     received_to_py(py, &m)
 }
 
 /// `None` for a frame that is not GOOSE, else `(frame dict, pdu dict)` (for tests).
 #[pyfunction]
-fn decode_goose_frame<'py>(py: Python<'py>, raw: &[u8]) -> PyResult<Option<(Bound<'py, PyDict>, Bound<'py, PyDict>)>> {
-    let Some((frame, m)) = goose::decode_frame(raw).map_err(|e| PyValueError::new_err(e.to_string()))? else {
+#[pyo3(signature = (raw, strict=false))]
+fn decode_goose_frame<'py>(
+    py: Python<'py>,
+    raw: &[u8],
+    strict: bool,
+) -> PyResult<Option<(Bound<'py, PyDict>, Bound<'py, PyDict>)>> {
+    let decoded = if strict { goose::decode_frame_strict(raw) } else { goose::decode_frame(raw) };
+    let Some((frame, m)) = decoded.map_err(|e| PyValueError::new_err(e.to_string()))? else {
         return Ok(None);
     };
     let d = PyDict::new(py);

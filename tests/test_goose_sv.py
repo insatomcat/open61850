@@ -9,13 +9,14 @@ import random
 import subprocess
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 import pytest
 from conftest import ROOT
 
 from open61850 import ber, ethernet, goose, sv
 from open61850.capture import CapturedFrame
-from open61850.data import BoolData, UIntData
+from open61850.data import BoolData, StructureData, UIntData
 from open61850.supervision import BusSupervisor
 
 # A 9-2LE style frame without its Ethernet header: 8-byte SV header, savPdu
@@ -124,6 +125,69 @@ def test_goose_counters_stop_at_64_bits() -> None:
     assert goose.decode_goose_pdu(with_st_num(bytes(12) + b"\xff" * 8)).st_num == 2**64 - 1
     with pytest.raises(goose.GooseDecodeError, match="stNum above 64 bits"):
         goose.decode_goose_pdu(with_st_num(b"\x01" + bytes(8)))
+
+
+def _goose_fields(**replace: bytes) -> list[bytes]:
+    """The TLVs of _goose_pdu()'s PDU, some replaced by tag."""
+    apdu = goose.encode_goose_pdu(_goose_pdu())
+    return [replace.get(f"t{t.tag:02x}", goose.ber.encode_tlv(t.tag, t.value))
+            for t in goose.ber.iter_tlvs(goose.ber.decode_tlv(apdu).value)]
+
+
+def _strict(fields: list[bytes], after: bytes = b"") -> Optional[str]:
+    """None when the strict decoder accepts the PDU, else its refusal."""
+    apdu = goose.ber.encode_tlv(0x61, b"".join(fields)) + after
+    goose.decode_goose_pdu(apdu)  # the lenient decoder accepts them all
+    try:
+        goose.decode_goose_pdu(apdu, strict=True)
+        return None
+    except goose.GooseDecodeError as exc:
+        return str(exc)
+
+
+def test_goose_strict_accepts_a_conformant_message() -> None:
+    assert _strict(_goose_fields()) is None
+    without_simulation = [f for f in _goose_fields() if f[0] != 0x87]
+    assert _strict(without_simulation) is None  # simulation is DEFAULT FALSE: may be absent
+    assert _strict(_goose_fields(t85=b"\x85\x05\x00\xff\xff\xff\xff")) is None  # 2^32 - 1
+    deep = goose.encode_goose_pdu(goose.GoosePDU(**{**_goose_pdu().__dict__, "num_dat_set_entries": 1,
+                                                   "all_data": [_nested(50)]}))
+    assert goose.decode_goose_pdu(deep, strict=True).num_dat_set_entries == 1
+
+
+def _nested(depth: int) -> StructureData:
+    value = StructureData([BoolData(True)])
+    for _ in range(depth - 1):
+        value = StructureData([value])
+    return value
+
+
+@pytest.mark.parametrize("replace, after, reason", [
+    ({}, b"\x00", "octets after the PDU"),
+    ({"t80": b"\xa0\x01A"}, b"", "not a GOOSE field"),
+    ({"t80": b"\x80\x00"}, b"", "empty gocbRef"),
+    ({"t80": b"\x80\x03IE\x01"}, b"", "gocbRef is not a VisibleString129"),
+    ({"t82": b"\x82\x82\x00\x82" + b"A" * 130}, b"", "datSet is not a VisibleString129"),
+    ({"t84": b"\x84\x09" + bytes(9)}, b"", "t of 9 octets"),
+    ({"t85": b"\x85\x05\x01\x00\x00\x00\x00"}, b"", "stNum above 32 bits"),
+    ({"t87": b"\x87\x02\x00\x01"}, b"", "simulation of 2 octets"),
+    ({"t8a": b"\x8a\x01\x03"}, b"", "numDatSetEntries=3 but 2 entries"),
+    ({"tab": b"\xab\x04\x83\x00\x86\x00"}, b"", "allData value 0x83 of 0 octets"),
+    ({"tab": b"\xab\x05\xa9\x00\x86\x01\x01"}, b"", "allData tag 0xA9 is not a Data"),
+    ({"tab": b"\xab\x05\x82\x00\x86\x01\x01"}, b"", "allData tag 0x82 is not a Data"),
+    ({"tab": b"\xab\x06\x87\x01\x08\x86\x01\x01"}, b"", "allData value 0x87 of 1 octets"),
+])
+def test_goose_strict_refuses_what_8_1_does_not_allow(replace: dict, after: bytes, reason: str) -> None:
+    refusal = _strict(_goose_fields(**replace), after)
+    assert refusal is not None and reason in refusal, refusal
+
+
+def test_goose_strict_refuses_fields_out_of_order() -> None:
+    fields = _goose_fields()
+    t, st_num = fields.index(_goose_fields()[3]), 4
+    assert fields[t][0] == 0x84 and fields[st_num][0] == 0x85
+    fields[t], fields[st_num] = fields[st_num], fields[t]
+    assert "field [4] after [5]" in (_strict(fields) or "")
 
 
 def test_goose_rejects_garbage() -> None:

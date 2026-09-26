@@ -13,8 +13,10 @@ of them: both decoders refuse, or both accept with the same values.
 
 from __future__ import annotations
 
+import collections
 import math
 import random
+import re
 import struct
 from typing import Any, Optional
 
@@ -22,7 +24,7 @@ import pytest
 from test_goose_encode_native import _data, _message
 from test_sv_decode_native import _mutate, _tlv
 
-from open61850 import goose
+from open61850 import ber, goose
 from open61850.data import (
     ArrayData,
     BitStringData,
@@ -128,7 +130,29 @@ def _compare_pdu(apdu: bytes) -> bool:
     assert py_ok == rs_ok, f"{apdu.hex()}: Python {py!r}, native {rs!r}"
     if py_ok:
         _same_pdu(py, rs)
+        _compare_strict(apdu)
     return py_ok
+
+
+def _strict_outcome(decode: Any, error: type[Exception], apdu: bytes) -> Optional[str]:
+    """None when accepted, else the refusal with tags of more than four octets
+    shown as u32::MAX, as the native decoder reads them."""
+    try:
+        decode(apdu, strict=True)
+        return None
+    except error as exc:
+        return re.sub(r"0x([0-9A-F]{9,})", "0xFFFFFFFF", str(exc))
+
+
+STRICT = collections.Counter()
+
+
+def _compare_strict(apdu: bytes) -> None:
+    """On a PDU both lenient decoders accept: the same strict verdict, with the same reason."""
+    py = _strict_outcome(goose.decode_goose_pdu, goose.GooseDecodeError, apdu)
+    rs = _strict_outcome(rt.decode_goose_pdu, ValueError, apdu)
+    assert py == rs, f"{apdu.hex()}: Python {py!r}, native {rs!r}"
+    STRICT["accepted" if py is None else py.split(":")[1].split(" ")[1]] += 1
 
 
 def _compare_frame(raw: bytes) -> Optional[bool]:
@@ -228,6 +252,84 @@ def test_pdu_parity(seed: int) -> None:
             else:
                 refused += 1
     assert accepted > 50 and refused > 50  # the mutations exercise both outcomes
+
+
+def test_strict_verdicts_cover_both_outcomes() -> None:
+    """Runs after test_pdu_parity: the strict comparisons accepted and refused, for many reasons."""
+    if not STRICT:
+        pytest.skip("test_pdu_parity did not run")
+    assert STRICT["accepted"] > 100 and sum(STRICT.values()) - STRICT["accepted"] > 100, STRICT
+    assert len(STRICT) > 8, STRICT
+
+
+def _fields(apdu: bytes) -> list[bytes]:
+    return [ber.encode_tlv(t.tag, t.value) for t in ber.iter_tlvs(ber.decode_tlv(apdu).value)]
+
+
+def _with_data(fields: list[bytes], *values: bytes) -> list[bytes]:
+    """allData replaced by ``values`` and numDatSetEntries set to their count."""
+    out = [f for f in fields if f[0] not in (0x8A, 0xAB)]
+    return out + [ber.encode_tlv(0x8A, bytes([len(values)])), ber.encode_tlv(0xAB, b"".join(values))]
+
+
+def _replace(fields: list[bytes], tag: int, tlv: bytes) -> list[bytes]:
+    return [tlv if f[0] == tag else f for f in fields]
+
+
+# One deviation from IEC 61850-8-1 each, applied to a conformant PDU's fields.
+DEVIATIONS: dict[str, Any] = {
+    "octets after the PDU": lambda f: (f, b"\x00"),
+    "gocbRef of another class": lambda f: ([b"\x00" + f[0][1:]] + f[1:], b""),
+    "field [12]": lambda f: (f + [b"\x8c\x00"], b""),
+    "fields out of order": lambda f: ([f[1], f[0]] + f[2:], b""),
+    "gocbRef empty": lambda f: (_replace(f, 0x80, b"\x80\x00"), b""),
+    "gocbRef of 130": lambda f: (_replace(f, 0x80, ber.encode_tlv(0x80, b"A" * 130)), b""),
+    "datSet outside the alphabet": lambda f: (_replace(f, 0x82, b"\x82\x02D\x7f"), b""),
+    "t of 9 octets": lambda f: (_replace(f, 0x84, b"\x84\x09" + bytes(9)), b""),
+    "stNum of 5 octets": lambda f: (_replace(f, 0x85, b"\x85\x05\x01\x00\x00\x00\x00"), b""),
+    "sqNum of 6 octets": lambda f: (_replace(f, 0x86, b"\x86\x06\x00\x00\x00\x00\x00\x01"), b""),
+    "stNum of 5 octets with 00": lambda f: (_replace(f, 0x85, b"\x85\x05\x00\xff\xff\xff\xff"), b""),
+    "simulation of 2": lambda f: (_replace(f, 0x87, b"\x87\x02\x00\x00"), b""),
+    "ndsCom empty": lambda f: (_replace(f, 0x89, b"\x89\x00"), b""),
+    "no allData": lambda f: ([x for x in f if x[0] != 0xAB], b""),
+    "entries mismatch": lambda f: (_replace(f, 0x8A, b"\x8a\x01\x63"), b""),
+    "empty boolean": lambda f: (_with_data(f, b"\x83\x00"), b""),
+    "float of 3": lambda f: (_with_data(f, b"\x87\x03\x08\x00\x00"), b""),
+    "binary-time of 5": lambda f: (_with_data(f, b"\x8c\x05" + bytes(5)), b""),
+    "binary-time of 4": lambda f: (_with_data(f, b"\x8c\x04" + bytes(4)), b""),
+    "utc-time of 9": lambda f: (_with_data(f, b"\x91\x09" + bytes(9)), b""),
+    "bit string unused 8": lambda f: (_with_data(f, b"\x84\x02\x08\x00"), b""),
+    "empty bit string": lambda f: (_with_data(f, b"\x84\x00"), b""),
+    "empty unsigned": lambda f: (_with_data(f, b"\x86\x00"), b""),
+    "visible string outside the alphabet": lambda f: (_with_data(f, b"\x8a\x01\x01"), b""),
+    "application-class data": lambda f: (_with_data(f, b"\x43\x00"), b""),
+    "high tag data": lambda f: (_with_data(f, b"\x9f\x20\x00"), b""),
+    "constructed [3]": lambda f: (_with_data(f, b"\xa3\x00"), b""),
+    "primitive structure": lambda f: (_with_data(f, b"\x82\x00"), b""),
+    "deep structure, bad leaf": lambda f: (_with_data(f, b"\xa2\x06\xa1\x04\xa2\x02\x83\x00"), b""),
+    "deep structure, good": lambda f: (_with_data(f, b"\xa2\x07\xa1\x05\xa2\x03\x83\x01\xff"), b""),
+}
+
+
+def test_strict_parity_on_each_deviation() -> None:
+    rng = random.Random(8)
+    conformant: list[bytes] = []
+    while len(conformant) < 40:
+        apdu = goose.encode_goose_pdu(_message(rng))
+        if _strict_outcome(goose.decode_goose_pdu, goose.GooseDecodeError, apdu) is None:
+            conformant.append(apdu)
+    verdicts = collections.Counter()
+    for apdu in conformant:
+        assert _compare_pdu(apdu)
+        for name, deviate in DEVIATIONS.items():
+            fields, after = deviate(_fields(apdu))
+            changed = ber.encode_tlv(0x61, b"".join(fields)) + after
+            if _compare_pdu(changed):  # also compares the strict verdicts
+                refusal = _strict_outcome(goose.decode_goose_pdu, goose.GooseDecodeError, changed)
+                verdicts[(name, refusal is None)] += 1
+    for name in DEVIATIONS:
+        accepted = name in ("stNum of 5 octets with 00", "binary-time of 4", "deep structure, good")
+        assert verdicts[(name, accepted)] > 0 and verdicts[(name, not accepted)] == 0, (name, verdicts)
 
 
 @pytest.mark.parametrize("seed", range(10))
