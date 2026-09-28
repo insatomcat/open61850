@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `comtrade.save_comtrade` writes a `Comtrade` record in revision 1999 or
+  2013, in any of the four data formats (a disturbance recorder's
+  output). The reader keeps the 2013 time code and time quality lines
+  (`time_code`, `local_code`, `tmq_code`, `leap_second`).
+
 ## 0.9.2 (2026-09-28)
 
 - `PacketCapture.ring()` and `next_slot` open the low-latency capture's

@@ -1,7 +1,7 @@
 # Copyright 2026 Florent Carli
 # SPDX-License-Identifier: Apache-2.0
 
-"""COMTRADE records (IEEE C37.111 / IEC 60255-24), read with no dependency.
+"""COMTRADE records (IEEE C37.111 / IEC 60255-24), read and written with no dependency.
 
 A record is a ``.cfg`` file (channels, rates, times, data format) and a
 ``.dat`` file (the samples), in ASCII, BINARY (16 bits), BINARY32 or
@@ -13,12 +13,16 @@ fault record becomes Sampled Values (:meth:`open61850.sv_publisher.Playback.from
 
     record = load_comtrade("fault.cfg")
     print(record.analog_channels[0].ch_id, record.analog(0)[:5])
+
+:func:`save_comtrade` writes a :class:`Comtrade` back, in revision 1999 or
+2013 (a disturbance recorder's output).
 """
 
 from __future__ import annotations
 
 import bisect
 import math
+import os
 import struct
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +37,7 @@ __all__ = [
     "load_comtrade",
     "parse_cfg",
     "resample",
+    "save_comtrade",
 ]
 
 
@@ -83,6 +88,12 @@ class Comtrade:
     timestamps: list[Optional[int]] = field(default_factory=list)  # in microseconds times timemult
     raw_analog: list[list[Optional[float]]] = field(default_factory=list)  # per channel, None = missing
     raw_digital: list[list[int]] = field(default_factory=list)
+    # Revision 2013: the time code and local code (offsets from UTC, "-5h30"), the time quality (a hex digit,
+    # 0 locked, F clock failure) and the leap second indicator; None when the file has no such lines.
+    time_code: Optional[str] = None
+    local_code: Optional[str] = None
+    tmq_code: Optional[str] = None
+    leap_second: Optional[int] = None
 
     def _channel(self, ref: Union[int, str]) -> int:
         if isinstance(ref, int):
@@ -196,6 +207,8 @@ def parse_cfg(text: str) -> Comtrade:
         trigger = _datetime(lines[pos + 1], revision)
         data_format = lines[pos + 2].strip().upper() if pos + 2 < len(lines) else "ASCII"
         timemult = _float(lines[pos + 3], 1.0) if pos + 3 < len(lines) and lines[pos + 3].strip() else 1.0
+        codes = _fields(lines[pos + 4]) if pos + 4 < len(lines) and lines[pos + 4].strip() else []
+        quality = _fields(lines[pos + 5]) if pos + 5 < len(lines) and lines[pos + 5].strip() else []
     except (IndexError, ValueError) as exc:
         if isinstance(exc, ComtradeError):
             raise
@@ -204,8 +217,14 @@ def parse_cfg(text: str) -> Comtrade:
         raise ComtradeError(f"unknown data format {data_format!r}")
     if nrates == 0:
         rates = []
-    return Comtrade(head[0], head[1] if len(head) > 1 else "", revision, analog, digital, frequency, rates,
-                    start, trigger, data_format, timemult)
+    record = Comtrade(head[0], head[1] if len(head) > 1 else "", revision, analog, digital, frequency, rates,
+                      start, trigger, data_format, timemult)
+    if codes:
+        record.time_code, record.local_code = codes[0], codes[1] if len(codes) > 1 else None
+    if quality:
+        record.tmq_code = quality[0]
+        record.leap_second = int(quality[1]) if len(quality) > 1 and quality[1] else None
+    return record
 
 
 def _read_ascii(record: Comtrade, data: bytes) -> None:
@@ -261,6 +280,108 @@ def load_comtrade(cfg: Union[str, Path], dat: Union[str, Path, None] = None) -> 
     else:
         _read_binary(record, data)
     return record
+
+
+_MISSING_ASCII = {"1999": "99999", "2013": ""}
+
+
+def _number(value: float) -> str:
+    """A .cfg number: an integer without its point, else the shortest text that reads back the same float."""
+    if math.isfinite(value) and value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+    return repr(float(value))
+
+
+def _clock(when: Optional[datetime]) -> str:
+    return when.strftime("%d/%m/%Y,%H:%M:%S.%f") if when is not None else ","
+
+
+def _cfg_text(record: Comtrade) -> str:
+    n_a, n_d = len(record.analog_channels), len(record.digital_channels)
+    lines = [f"{record.station},{record.device},{record.revision}", f"{n_a + n_d},{n_a}A,{n_d}D"]
+    for k, c in enumerate(record.analog_channels, 1):
+        lines.append(",".join([str(k), c.ch_id, c.phase, c.ccbm, c.unit, _number(c.a), _number(c.b),
+                               _number(c.skew_us), _number(c.min), _number(c.max), _number(c.primary),
+                               _number(c.secondary), c.ps]))
+    for k, d in enumerate(record.digital_channels, 1):
+        lines.append(",".join([str(k), d.ch_id, d.phase, d.ccbm, str(d.normal)]))
+    lines.append(_number(record.frequency))
+    lines.append(str(len(record.rates)))
+    lines += [f"{_number(rate)},{last}" for rate, last in record.rates] or [f"0,{len(record.numbers)}"]
+    lines += [_clock(record.start), _clock(record.trigger), record.data_format, _number(record.timemult)]
+    if record.revision == "2013":
+        lines.append(f"{record.time_code or '0'},{record.local_code or '0'}")
+        lines.append(f"{record.tmq_code or 'F'},{record.leap_second or 0}")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _dat_ascii(record: Comtrade) -> bytes:
+    missing = _MISSING_ASCII[record.revision]
+    rows = []
+    for k, number in enumerate(record.numbers):
+        timestamp = record.timestamps[k] if k < len(record.timestamps) else None
+        fields = [str(number), "" if timestamp is None else str(timestamp)]
+        fields += [missing if raw[k] is None else _number(raw[k]) for raw in record.raw_analog]  # type: ignore[arg-type]
+        fields += [str(states[k]) for states in record.raw_digital]
+        rows.append(",".join(fields))
+    return ("\r\n".join(rows) + "\r\n").encode("latin-1") if rows else b""
+
+
+def _dat_binary(record: Comtrade) -> bytes:
+    code, missing = _BINARY[record.data_format]
+    n_a, n_d = len(record.analog_channels), len(record.digital_channels)
+    words = (n_d + 15) // 16
+    row = struct.Struct(f"<II{n_a}{code}{words}H")
+    low, high = {"h": (-0x7FFF, 0x7FFF), "i": (-0x7FFFFFFF, 0x7FFFFFFF)}.get(code, (None, None))
+    out = bytearray(row.size * len(record.numbers))
+    for k, number in enumerate(record.numbers):
+        timestamp = record.timestamps[k] if k < len(record.timestamps) else None
+        values: list[Union[int, float]] = [number, 0xFFFFFFFF if timestamp is None else timestamp]
+        for raw in record.raw_analog:
+            value = raw[k]
+            if value is None or (isinstance(value, float) and math.isnan(value)):
+                values.append(math.nan if missing is None else missing)
+            elif missing is None:
+                values.append(value)
+            else:
+                integer = round(value)
+                if low is None or high is None or not low <= integer <= high:
+                    raise ComtradeError(f"sample {number}: {value} does not fit {record.data_format}")
+                values.append(integer)
+        packed = [0] * words
+        for i, states in enumerate(record.raw_digital):
+            if states[k]:
+                packed[i // 16] |= 1 << (i % 16)
+        values += packed
+        row.pack_into(out, k * row.size, *values)
+    return bytes(out)
+
+
+def save_comtrade(record: Comtrade, cfg: Union[str, Path], dat: Union[str, Path, None] = None) -> None:
+    """Write ``record`` as ``cfg`` and its data file (``dat``, by default the ``.cfg`` with a ``.dat`` suffix).
+
+    Revision 1999 or 2013, in ``record.data_format``. The analog values are
+    the raw ones (``raw_analog``: the file's value is ``a * raw + b``), None
+    or NaN for a missing sample; BINARY and BINARY32 round them to integers.
+    ``numbers`` gives the sample numbers, ``timestamps`` their times (None:
+    none). Each file is written whole or not at all.
+    """
+    if record.revision not in _MISSING_ASCII:
+        raise ComtradeError(f"revision {record.revision!r} is not written (1999, 2013)")
+    if record.data_format not in ("ASCII", "BINARY", "BINARY32", "FLOAT32"):
+        raise ComtradeError(f"unknown data format {record.data_format!r}")
+    count = len(record.numbers)
+    if len(record.raw_analog) != len(record.analog_channels) or len(record.raw_digital) != len(record.digital_channels):
+        raise ComtradeError("raw_analog and raw_digital must have one list per channel")
+    if any(len(values) != count for values in record.raw_analog) or any(len(v) != count for v in record.raw_digital):
+        raise ComtradeError(f"every channel must have {count} samples, one per sample number")
+    cfg_path = Path(cfg)
+    dat_path = Path(dat) if dat is not None else cfg_path.with_suffix(".dat")
+    data = _dat_ascii(record) if record.data_format == "ASCII" else _dat_binary(record)
+    for path, content in ((dat_path, data), (cfg_path, _cfg_text(record).encode("latin-1"))):
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_bytes(content)
+        os.replace(temporary, path)
 
 
 def resample(times: list[float], values: list[float], rate: int) -> list[float]:

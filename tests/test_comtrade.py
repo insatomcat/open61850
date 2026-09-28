@@ -18,7 +18,16 @@ from datetime import datetime
 
 import pytest
 
-from open61850.comtrade import ComtradeError, load_comtrade, parse_cfg, resample
+from open61850.comtrade import (
+    AnalogChannel,
+    Comtrade,
+    ComtradeError,
+    DigitalChannel,
+    load_comtrade,
+    parse_cfg,
+    resample,
+    save_comtrade,
+)
 from open61850.sv_publisher import Playback
 
 N, RATE = 40, 1000.0
@@ -112,3 +121,64 @@ def test_playback_from_comtrade(tmp_path) -> None:
     assert playback.values[22][2] == round(0.002 * VA[6] * 100 / 2)  # halfway to the next sample
     with pytest.raises(ValueError):
         Playback.from_comtrade(record, ["IA"], rate=4000, scales=[1, 2])
+
+
+def _record(data_format: str, revision: str) -> Comtrade:
+    ia = [float(v) for v in IA]
+    va: list = [float(v) for v in VA]
+    va[5] = None
+    return Comtrade(
+        "STATION01", "REC01", revision,
+        [AnalogChannel(1, "IA", "A", "", "A", 0.01, 0.5, 0.0, -32767, 32767, 1000.0, 1.0, "S"),
+         AnalogChannel(2, "VA", "A", "", "kV", 0.002, 0.0, 0.0, -32767, 32767, 63.5, 0.1, "P")],
+        [DigitalChannel(1, "TRIP", "", "", 0), DigitalChannel(2, "CB_OPEN", "", "", 1)],
+        50.0, [(RATE, N)], datetime(2026, 9, 25, 10), datetime(2026, 9, 25, 10, 0, 0, 10000), data_format,
+        numbers=list(range(1, N + 1)), timestamps=[n * 1000 for n in range(N)],
+        raw_analog=[ia, va], raw_digital=[list(TRIP), list(CB)],
+    )
+
+
+@pytest.mark.parametrize("revision", ["1999", "2013"])
+@pytest.mark.parametrize("data_format", ["ASCII", "BINARY", "BINARY32", "FLOAT32"])
+def test_save_reads_back(tmp_path, data_format: str, revision: str) -> None:
+    record = _record(data_format, revision)
+    record.tmq_code, record.leap_second = ("0", 0) if revision == "2013" else (None, None)
+    save_comtrade(record, tmp_path / "rec.cfg")
+    back = load_comtrade(tmp_path / "rec.cfg")
+    assert (back.station, back.device, back.revision, back.data_format) == ("STATION01", "REC01", revision, data_format)
+    assert back.analog_channels == record.analog_channels and back.digital_channels == record.digital_channels
+    assert (back.frequency, back.rates, back.start, back.trigger) == (50.0, [(RATE, N)], record.start, record.trigger)
+    assert back.numbers == record.numbers and back.timestamps == record.timestamps
+    assert back.raw_analog == record.raw_analog and back.raw_digital == record.raw_digital
+    assert back.analog("IA")[3] == pytest.approx((0.01 * IA[3] + 0.5) * 1000) and math.isnan(back.analog("VA")[5])
+    if revision == "2013":
+        assert (back.time_code, back.local_code, back.tmq_code, back.leap_second) == ("0", "0", "0", 0)
+    else:
+        assert back.time_code is None and back.tmq_code is None
+    assert not list(tmp_path.glob(".*"))  # no temporary file left
+
+
+def test_save_refuses(tmp_path) -> None:
+    record = _record("BINARY", "1999")
+    record.raw_analog[0][0] = 40000.0  # beyond 16 bits
+    with pytest.raises(ComtradeError, match="does not fit"):
+        save_comtrade(record, tmp_path / "rec.cfg")
+    record = _record("BINARY32", "1991")
+    with pytest.raises(ComtradeError, match="revision"):
+        save_comtrade(record, tmp_path / "rec.cfg")
+    record = _record("BINARY32", "2013")
+    record.raw_digital[1].pop()
+    with pytest.raises(ComtradeError, match="samples"):
+        save_comtrade(record, tmp_path / "rec.cfg")
+    assert not list(tmp_path.iterdir())
+
+
+def test_save_many_digital_channels(tmp_path) -> None:
+    record = _record("BINARY32", "2013")
+    record.digital_channels = [DigitalChannel(k + 1, f"D{k}", "", "", 0) for k in range(20)]
+    record.raw_digital = [[(n >> (k % 6)) & 1 for n in range(N)] for k in range(20)]  # two 16-bit words
+    record.timestamps = [None] * N  # the rate gives the times
+    save_comtrade(record, tmp_path / "rec.cfg")
+    back = load_comtrade(tmp_path / "rec.cfg")
+    assert back.raw_digital == record.raw_digital and back.timestamps == [None] * N
+    assert back.times()[1] == pytest.approx(0.001)
