@@ -9,6 +9,7 @@ import socket
 import struct
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -139,6 +140,24 @@ def test_capture_on_loopback(low_latency: bool) -> None:
         while (got := cap.recv()) is not None:
             received.append(got.data)
         assert received == [frames[2]]
+
+
+@linux_only
+@pytest.mark.parametrize("low_latency", [False, True], ids=["v3", "v2"])
+def test_busy_poll_off_for_this_socket(low_latency: bool) -> None:
+    """busy_poll=0 turns the host's busy polling off for this socket, and frames still arrive."""
+    sender = _raw_sender()
+    with sender, capture.PacketCapture("lo", (0x88BA,), timeout=0.5, outgoing=False, promiscuous=False,
+                                       low_latency=low_latency, busy_poll=0) as cap:
+        assert cap.busy_poll == 0
+        sender.send(_frame(0x88BA, body=bytes(8)))
+        assert cap.recv() is not None
+    host = Path("/proc/sys/net/core/busy_read")  # global: absent from other network namespaces
+    if host.exists():
+        with capture.PacketCapture("lo", (0x88BA,), promiscuous=False) as cap:
+            assert cap.busy_poll == int(host.read_text())
+    with pytest.raises(ValueError):
+        capture.PacketCapture("lo", busy_poll=-1)
 
 
 @linux_only

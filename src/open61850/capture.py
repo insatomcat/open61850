@@ -25,6 +25,19 @@ TPACKET_V2 ring instead, cut into frames, each visible as soon as the
 kernel wrote it: one poll per frame when frames are sparse, for a
 protection that must act on each sample.
 
+``busy_poll`` sets the socket's busy polling (``SO_BUSY_POLL``, us). The
+tuned profiles ``network-latency`` and ``realtime`` set
+``net.core.busy_poll`` and ``busy_read`` to 50: every poll() on a socket
+then spins up to 50 us in the kernel before sleeping, counted as the
+process's system time. It pays for sockets fed by a NIC's NAPI with
+packets arriving within the spin; an AF_PACKET socket behind OVS and a
+macvlan has none, and an SV stream sends every 208 or 417 us. On a SEAPATH
+hypervisor, one 2-ASDU stream at 2400 frames/s: 57.8 us of system time per
+frame with the host's 50 us, 6.6 with ``busy_poll=0``, and the same delay
+from the kernel's stamp to the process (median 14.6 and 14.4 us, p99 28.8
+and 26.9). Lowering it needs no privilege; raising it above the host's
+value needs CAP_NET_ADMIN.
+
 Example::
 
     with PacketCapture("eth1") as cap:
@@ -72,6 +85,7 @@ PACKET_OUTGOING = 4
 TP_STATUS_KERNEL = 0
 TP_STATUS_USER = 1
 SO_ATTACH_FILTER = 26
+SO_BUSY_POLL = 46
 TP_STATUS_VLAN_VALID = 1 << 4
 TP_STATUS_VLAN_TPID_VALID = 1 << 6
 
@@ -187,12 +201,15 @@ class PacketCapture:
         timeout: Optional[float] = 0.05,
         outgoing: bool = True,
         low_latency: bool = False,
+        busy_poll: Optional[int] = None,
     ) -> None:
         """Open the capture; ``recv`` returns None after ``timeout`` seconds without a frame.
 
         ``buffer_bytes`` is the size of the ring. ``outgoing=False`` drops the
         frames this host sends (on ``lo`` every frame shows up twice otherwise).
         ``low_latency`` hands each frame over at once (TPACKET_V2, see above).
+        ``busy_poll``: microseconds of kernel busy polling for this socket, 0
+        for none; None keeps the host's ``net.core.busy_read`` (see above).
         """
         self.iface = iface
         self.outgoing = outgoing
@@ -210,6 +227,10 @@ class PacketCapture:
         self._sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)
         try:
             self.set_ethertypes(ethertypes)
+            if busy_poll is not None:
+                if busy_poll < 0:
+                    raise ValueError("busy_poll must not be negative")
+                self._sock.setsockopt(socket.SOL_SOCKET, SO_BUSY_POLL, busy_poll)
             if low_latency:
                 self._sock.setsockopt(SOL_PACKET, PACKET_VERSION, TPACKET_V2)
                 # tpacket_req: block size and count, frame size and count.
@@ -247,6 +268,11 @@ class PacketCapture:
 
     def fileno(self) -> int:
         return self._sock.fileno()
+
+    @property
+    def busy_poll(self) -> int:
+        """The socket's busy polling, us (``SO_BUSY_POLL``): the host's ``net.core.busy_read`` unless set."""
+        return self._sock.getsockopt(socket.SOL_SOCKET, SO_BUSY_POLL)
 
     def recv(self) -> Optional[CapturedFrame]:
         """Next frame, or None when the timeout expires first."""
