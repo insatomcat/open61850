@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.3 (2026-09-28)
 
 - `comtrade.save_comtrade` writes a `Comtrade` record in revision 1999 or
   2013, in any of the four data formats (a disturbance recorder's
