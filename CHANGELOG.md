@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 (2026-09-28)
+
+- `PacketCapture(..., busy_poll=0)` turns the host's busy polling off for
+  the capture's socket (`SO_BUSY_POLL`), and `busy_poll` reads it back.
+  The tuned profiles `network-latency` and `realtime` set
+  `net.core.busy_poll` and `busy_read` to 50 us, which an AF_PACKET socket
+  cannot use: a protection on a SEAPATH hypervisor spent 57.8 us of system
+  time per SV frame spinning in poll(), 6.6 without, for the same latency.
+
 ## 0.9.0 (2026-09-26)
 
 - `GoosePublisher.publish(values, send_now=True)`: the caller sends the
