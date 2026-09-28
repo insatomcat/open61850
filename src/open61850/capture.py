@@ -38,6 +38,16 @@ from the kernel's stamp to the process (median 14.6 and 14.4 us, p99 28.8
 and 26.9). Lowering it needs no privilege; raising it above the host's
 value needs CAP_NET_ADMIN.
 
+A reader outside :meth:`PacketCapture.recv` (a loop in C, which takes
+each frame without a Python object) reads the low-latency ring through
+:meth:`PacketCapture.ring` and :attr:`PacketCapture.next_slot`: slot ``k``
+starts at ``k * slot_size`` with a ``struct tpacket2_hdr``; it holds a
+frame when ``tp_status & TP_STATUS_USER``, at ``tp_mac`` for
+``tp_snaplen`` octets (the 802.1Q tag stripped, in ``tp_vlan_tci``), the
+``sockaddr_ll`` following the header at 32; the reader writes
+``TP_STATUS_KERNEL`` to give the slot back, takes the slots in order, and
+sets ``next_slot`` to where it stopped before ``recv`` is called again.
+
 Example::
 
     with PacketCapture("eth1") as cap:
@@ -69,6 +79,7 @@ __all__ = [
     "read_block",
     "read_frame_v2",
     "PacketCapture",
+    "Ring",
 ]
 
 
@@ -115,6 +126,14 @@ class CapturedFrame(NamedTuple):
 class CaptureStats(NamedTuple):
     received: int
     dropped: int  # frames the kernel could not queue to the socket
+
+
+class Ring(NamedTuple):
+    """The TPACKET_V2 ring of a low-latency capture (see the module's notes)."""
+
+    buffer: mmap.mmap
+    slot_size: int
+    slots: int
 
 
 def ethertype_filter(ethertypes: tuple[int, ...]) -> list[tuple[int, int, int, int]]:
@@ -268,6 +287,24 @@ class PacketCapture:
 
     def fileno(self) -> int:
         return self._sock.fileno()
+
+    def ring(self) -> Ring:
+        """The ring, for a reader of its own (``low_latency`` only); it stays valid until :meth:`close`."""
+        if not self.low_latency:
+            raise ValueError("the ring of slots is the low-latency capture's (TPACKET_V2)")
+        assert self._ring is not None
+        return Ring(self._ring, _FRAME_SIZE_V2, self._frames)
+
+    @property
+    def next_slot(self) -> int:
+        """The slot the next frame will be in (``low_latency``): where :meth:`recv` or another reader resumes."""
+        return self._next_frame
+
+    @next_slot.setter
+    def next_slot(self, slot: int) -> None:
+        if not 0 <= slot < self._frames:
+            raise ValueError(f"slot {slot} outside the ring of {self._frames}")
+        self._next_frame = slot
 
     @property
     def busy_poll(self) -> int:

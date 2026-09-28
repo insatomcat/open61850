@@ -161,6 +161,49 @@ def test_busy_poll_off_for_this_socket(low_latency: bool) -> None:
 
 
 @linux_only
+def test_a_reader_of_its_own_shares_the_ring_with_recv() -> None:
+    """Frames read through ring() and next_slot, as a C loop does, then recv() resumes after them."""
+    sender = _raw_sender()
+    with sender, capture.PacketCapture("lo", (0x88BA,), timeout=0.5, outgoing=False, promiscuous=False,
+                                       buffer_bytes=0, low_latency=True) as cap:
+        ring = cap.ring()
+        assert ring.slot_size == 2048 and ring.slots * ring.slot_size == len(ring.buffer)
+        sent = [_frame(0x88BA, body=n.to_bytes(8, "big")) for n in range(ring.slots + 5)]  # around the ring
+        taken = []
+        slot = cap.next_slot
+        for n, frame in enumerate(sent):
+            sender.send(frame)
+            if n % 2:
+                got = cap.recv()
+                assert got is not None
+                taken.append(got.data)
+                slot = cap.next_slot
+                continue
+            deadline = time.monotonic() + 1
+            while True:  # on lo each frame shows up twice: the outgoing copy is passed over, as recv() does
+                offset = slot * ring.slot_size
+                status, _len, snaplen, mac = struct.unpack_from("=IIIH", ring.buffer, offset)
+                if not status & capture.TP_STATUS_USER:
+                    assert time.monotonic() < deadline
+                    continue
+                outgoing = ring.buffer[offset + 32 + 10] == capture.PACKET_OUTGOING
+                data = bytes(ring.buffer[offset + mac : offset + mac + snaplen])
+                struct.pack_into("=I", ring.buffer, offset, capture.TP_STATUS_KERNEL)
+                slot = (slot + 1) % ring.slots
+                if not outgoing:
+                    taken.append(data)
+                    break
+            cap.next_slot = slot
+        while (got := cap.recv()) is not None:
+            taken.append(got.data)
+        assert taken == sent
+    with pytest.raises(ValueError):
+        cap.next_slot = ring.slots
+    with capture.PacketCapture("lo", (0x88BA,), promiscuous=False) as block_capture, pytest.raises(ValueError):
+        block_capture.ring()
+
+
+@linux_only
 def test_low_latency_hands_each_frame_over_at_once() -> None:
     """Each frame reaches the reader at once (no block timer), and the ring of 256 slots wraps around."""
     sender = _raw_sender()
