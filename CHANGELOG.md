@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2 (2026-09-28)
+
+- `PacketCapture.ring()` and `next_slot` open the low-latency capture's
+  TPACKET_V2 ring to a reader of its own: a loop in C that takes each
+  frame without a Python object, `recv()` resuming where it stopped. The
+  module's notes give the slot protocol.
+
 ## 0.9.1 (2026-09-28)
 
 - `PacketCapture(..., busy_poll=0)` turns the host's busy polling off for
