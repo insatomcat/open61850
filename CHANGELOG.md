@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.4 (2026-10-04)
 
 - The MMS server has setting groups (IEC 61850-7-2 clause 16): a
   logical device whose LLN0 has a `SettingControl` gets its SGCB
