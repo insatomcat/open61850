@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Florent Carli, SPDX-License-Identifier: Apache-2.0. Setting groups for tests/test_server_settings.py. -->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+  <IED name="IED01" manufacturer="Vendor" type="Relay">
+    <AccessPoint name="AP1"><Server>
+      <LDevice inst="PROT">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+          <SettingControl numOfSGs="3" actSG="2" resvTms="60"/>
+        </LN0>
+        <LN lnClass="PTOC" inst="1" lnType="PTOC_T">
+          <DOI name="StrVal">
+            <SDI name="setMag">
+              <DAI name="f"><Val sGroup="1">100</Val><Val sGroup="2">200</Val><Val sGroup="3">300</Val></DAI>
+            </SDI>
+          </DOI>
+          <DOI name="OpDlTmms">
+            <DAI name="setVal"><Val sGroup="3">750</Val></DAI>
+          </DOI>
+          <DOI name="TmMult">
+            <SDI name="setMag"><DAI name="f"><Val>0.5</Val></DAI></SDI>
+          </DOI>
+        </LN>
+      </LDevice>
+    </Server></AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_T" lnClass="LLN0">
+      <DO name="Mod" type="ENC_Mod"/>
+    </LNodeType>
+    <LNodeType id="PTOC_T" lnClass="PTOC">
+      <DO name="StrVal" type="ASG_SG"/>
+      <DO name="OpDlTmms" type="ING_SG"/>
+      <DO name="TmMult" type="ASG_SP"/>
+    </LNodeType>
+    <DOType id="ENC_Mod" cdc="ENC">
+      <DA name="stVal" bType="INT32" fc="ST"/>
+    </DOType>
+    <DOType id="ASG_SG" cdc="ASG">
+      <DA name="setMag" bType="Struct" type="AnalogueValue" fc="SE"/>
+    </DOType>
+    <DOType id="ING_SG" cdc="ING">
+      <DA name="setVal" bType="INT32" fc="SG"><Val>500</Val></DA>
+      <DA name="setVal" bType="INT32" fc="SE"/>
+    </DOType>
+    <DOType id="ASG_SP" cdc="ASG">
+      <DA name="setMag" bType="Struct" type="AnalogueValue" fc="SP"/>
+    </DOType>
+    <DAType id="AnalogueValue">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+  </DataTypeTemplates>
+</SCL>

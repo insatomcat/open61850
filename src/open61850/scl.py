@@ -415,7 +415,9 @@ class _Templates:
             if kind == "SDO":
                 self._do(self.get("DOType", child.get("type")), path + [child.get("name", "")], items, seen)
             elif kind == "DA" and child.get("fc"):
-                self._da(child, child.get("fc", ""), path + [child.get("name", "")], items, seen)
+                # an SE attribute has its SG twin (the active group's value), as libiec61850 builds it
+                for fc in ("SE", "SG") if child.get("fc") == "SE" else (child.get("fc", ""),):
+                    self._da(child, fc, path + [child.get("name", "")], items, seen)
 
     def _da(self, da: ET.Element, fc: str, path: list[str], items: dict[str, None], seen: set[str]) -> None:
         items.setdefault(fc, None)
@@ -465,6 +467,8 @@ def ied_model(root: ET.Element, ied_name: Optional[str] = None) -> ServerModel:
                 node.items += [f"{fc}${c.get('name', '')}" for c in _children(ln, kind)]
             for sc in _children(ln, "SampledValueControl"):
                 node.items.append(f"{'MS' if sc.get('multicast', 'true') == 'true' else 'US'}${sc.get('name', '')}")
+            if _children(ln, "SettingControl"):
+                node.items.append("SP$SGCB")
             node.items = list(dict.fromkeys(i for item in node.items for i in _with_fc_level(item)))
             node.data_sets = [ds.get("name", "") for ds in _children(ln, "DataSet")]
             device.logical_nodes[node.name] = node

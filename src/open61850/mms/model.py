@@ -46,6 +46,11 @@ __all__ = [
 ]
 
 
+def _in_control_block(fc: str, path: str) -> bool:
+    """Whether ``FC$path`` is (in) a control block: its FC is one of theirs, or it is LLN0's SGCB (FC SP)."""
+    return fc in CONTROL_BLOCK_FCS or (fc == "SP" and (path == "SGCB" or path.startswith("SGCB$")))
+
+
 @dataclass
 class LogicalNode:
     """One logical node: its MMS variables below it (``FC$...``), data sets and optional type."""
@@ -74,7 +79,7 @@ class LogicalNode:
             item_fc, _, path = item.partition("$")
             if not path or (fc is not None and item_fc != fc):
                 continue
-            if item_fc in CONTROL_BLOCK_FCS and not control_blocks:
+            if _in_control_block(item_fc, path) and not control_blocks:
                 continue
             if leaves and item in parents:
                 continue
@@ -86,16 +91,16 @@ class LogicalNode:
         seen: dict[str, None] = {}
         for item in self.items:
             parts = item.split("$")
-            if len(parts) >= 2 and parts[0] not in CONTROL_BLOCK_FCS:
+            if len(parts) >= 2 and not _in_control_block(parts[0], parts[1]):
                 seen.setdefault(parts[1], None)
         return list(seen)
 
     def control_blocks(self, fc: Optional[str] = None) -> list[Reference]:
-        """Report, log, GOOSE and SV control blocks (FC BR, RP, LG, GO, GS, MS, US)."""
+        """Report, log, GOOSE and SV control blocks (FC BR, RP, LG, GO, GS, MS, US), and the SGCB (``SP$SGCB``)."""
         out = []
         for item in self.items:
             parts = item.split("$")
-            if len(parts) == 2 and parts[0] in CONTROL_BLOCK_FCS and (fc is None or parts[0] == fc):
+            if len(parts) == 2 and _in_control_block(*parts) and (fc is None or parts[0] == fc):
                 out.append(Reference(self.ld, self.name, (parts[1],), parts[0]))
         return out
 

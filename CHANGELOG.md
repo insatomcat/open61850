@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server has setting groups (IEC 61850-7-2 clause 16): a
+  logical device whose LLN0 has a `SettingControl` gets its SGCB
+  (`LLN0$SP$SGCB`, libiec61850's layout) and `IedModel.setting_groups`,
+  each group's values from the SCL's `Val sGroup`. `SettingGroupEngine`
+  (`MmsServer.setting_groups`) serves SelectActiveSG, SelectEditSG with
+  its reservation (ResvTms, the client's going) and ConfirmEditSGValues
+  as libiec61850 does; the application follows or refuses them with
+  `on_active`, `on_edit`, `on_confirm`, and changes the groups with
+  `select_active` and `set_values`. Checked against libiec61850's
+  `server_example_sg` in the interoperability tests.
+- `open61850.mms`: `read_sgcb`, `select_active_sg`, `select_edit_sg`,
+  `confirm_edit_sg_values` for the client.
+- An SCL attribute in FC SE has its SG twin, in the server's model and in
+  `scl.load_model`, as libiec61850 builds it; `discover` and `compare`
+  count the SGCB as a control block.
+
 ## 0.9.3 (2026-09-28)
 
 - `comtrade.save_comtrade` writes a `Comtrade` record in revision 1999 or

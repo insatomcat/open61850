@@ -15,6 +15,13 @@ DataTypeTemplates give the types (bType to MMS type as IEC 61850-8-1 maps
 them), ``Val`` elements and the IED's DOI/DAI the initial values.
 :meth:`IedModel.set` changes a value from the application; the change
 listeners (reports) are told.
+
+A logical device whose LLN0 has a ``SettingControl`` gets the setting
+group control block ``LLN0$SP$SGCB`` and :attr:`IedModel.setting_groups`:
+the values of each group, from the ``Val`` elements with an ``sGroup``
+(a group without its own value takes the attribute's other one). FC SG
+holds the active group's values, FC SE the edited group's; the server's
+:class:`~.settings.SettingGroupEngine` switches and edits them.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from __future__ import annotations
 import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -52,8 +60,10 @@ __all__ = [
     "ACCESS_TYPE_INCONSISTENT",
     "ACCESS_OBJECT_VALUE_INVALID",
     "WRITABLE_FCS",
+    "SGCB_RESV_TMS",
     "Node",
     "IedModel",
+    "SettingGroups",
     "to_data",
 ]
 
@@ -68,6 +78,7 @@ ACCESS_OBJECT_VALUE_INVALID = 11
 
 # What a client may write (the CO FC goes through the control handling).
 WRITABLE_FCS = frozenset({"CF", "DC", "SP", "SV", "SE", "BL"})
+SGCB_RESV_TMS = 300  # s, an edit's reservation when SettingControl gives none (libiec61850's CONFIG_IEC61850_SG_RESVTMS)
 
 _BTYPES: dict[str, tuple[str, Optional[int]]] = {
     "BOOLEAN": ("boolean", None),
@@ -264,6 +275,22 @@ def _build(name: str, mms_type: MmsType, parent: Optional[Node], fc: Optional[st
 ChangeListener = Callable[[list[Node]], None]
 
 
+@dataclass
+class SettingGroups:
+    """The setting groups of a logical device (its LLN0's ``SettingControl``)."""
+
+    count: int  # NumOfSG
+    resv_tms: int = SGCB_RESV_TMS  # s, how long an edit stays reserved without a confirmation
+    # group (1..count) -> attribute without its FC ("PTOC1.StrVal.setMag.f") -> value
+    values: dict[int, dict[str, IECData]] = field(default_factory=dict)
+
+
+def group_key(node: Node) -> str:
+    """The name of a setting in every group: ``LN.DO.DA`` of an SG or SE leaf (its FC left out)."""
+    parts = node.item.split("$")
+    return ".".join([parts[0], *parts[2:]])
+
+
 class IedModel:
     """The logical devices of one IED, their values, data sets and control blocks."""
 
@@ -271,6 +298,7 @@ class IedModel:
         self.ied_name = ied_name
         self.logical_devices: dict[str, dict[str, Node]] = {}  # domain -> LN name -> LN node
         self.data_sets: dict[ObjectName, list[ObjectName]] = {}
+        self.setting_groups: dict[str, SettingGroups] = {}  # domain -> its groups, when LLN0 has a SettingControl
         self.lock = threading.RLock()
         self._listeners: list[ChangeListener] = []
 
@@ -415,6 +443,9 @@ _MSVCB: _Layout = [("SvEna", _prim("boolean")), ("MsvID", _prim("visible-string"
           ("DatSet", _prim("visible-string", -129)),
           ("ConfRev", _prim("unsigned", 32)), ("SmpRate", _prim("unsigned", 16)), ("OptFlds", _prim("bit-string", 5)),
           ("SmpMod", _prim("integer", 8)), ("DstAddress", _DST_ADDRESS)]
+# The setting group control block, first in LLN0's SP (8-1 and libiec61850's order); ResvTms in edition 2.
+_SGCB: _Layout = [("NumOfSG", _prim("unsigned", 8)), ("ActSG", _prim("unsigned", 8)), ("EditSG", _prim("unsigned", 8)),
+         ("CnfEdit", _prim("boolean")), ("LActTm", _prim("utc-time")), ("ResvTms", _prim("unsigned", 16))]
 # The order of the functional constraints in a logical node, as libiec61850 builds it
 # (IEC 61850-8-1 leaves it open); control blocks sit among them.
 FC_ORDER = ["MX", "ST", "CO", "CF", "DC", "SP", "SG", "RP", "LG", "BR", "GO", "SV", "SE", "MS", "US", "EX", "SR", "OR", "BL"]
@@ -446,6 +477,9 @@ class _SclBuilder:
         self.owner = False  # RCBs carry Owner (Services/ReportSettings owner="true", edition 2)
         self.resv_tms = True  # BRCBs carry ResvTms (edition 2)
         self.edition2 = True  # edition 1 spells TimeofEntry
+        self.domain = ""  # the logical device being built
+        self.setting_controls: dict[str, SettingGroups] = {}  # domain -> its groups, values still to fill
+        self.grouped: dict[tuple[str, str], dict[int, IECData]] = {}  # (domain, group key) -> sGroup -> Val
         self.types: dict[tuple[str, str], ET.Element] = {}
         for templates in _children(root, "DataTypeTemplates"):
             for element in templates:
@@ -481,11 +515,19 @@ class _SclBuilder:
 
     def _set_val(self, node: Node, element: ET.Element) -> None:
         vals = _children(element, "Val")
-        if vals and node.value is not None:
-            enum_type = element.get("type") if element.get("bType") == "Enum" else node.enum_type
-            value = self._parse(node, vals[0].text or "", enum_type)
-            if value is not None and _fits(node.mms_type, value):
-                node.value = value
+        if not vals or node.value is None:
+            return
+        enum_type = element.get("type") if element.get("bType") == "Enum" else node.enum_type
+        plain = True  # the first Val without an sGroup is the value
+        for val in vals:
+            group = val.get("sGroup")
+            value = self._parse(node, val.text or "", enum_type)
+            if value is None or not _fits(node.mms_type, value) or (group is None and not plain):
+                continue
+            if group is None:
+                node.value, plain = value, False
+            elif group.isdigit() and node.fc in ("SG", "SE"):
+                self.grouped.setdefault((self.domain, group_key(node)), {})[int(group)] = value
 
     # types
 
@@ -495,9 +537,12 @@ class _SclBuilder:
         if do_type is None or do_type_id in seen:
             return []
         out: list[tuple[str, MmsType, ET.Element]] = []
+        declared_sg = {c.get("name") for c in do_type if _local(c.tag) == "DA" and c.get("fc") == "SG"}
         for child in do_type:
             kind = _local(child.tag)
-            if kind == "DA" and child.get("fc") == fc:
+            # an SE attribute has its SG twin (the active group's value), as libiec61850 builds it
+            twin = fc == "SG" and child.get("fc") == "SE" and child.get("name") not in declared_sg
+            if kind == "DA" and (child.get("fc") == fc or twin):
                 out.append((child.get("name", ""), _ms_type_for(child, self, frozenset()), child))
             elif kind == "SDO":
                 inner = self._do_components(child.get("type", ""), fc, seen | {do_type_id})
@@ -511,8 +556,9 @@ class _SclBuilder:
             return []
         fcs: list[str] = []
         for child in do_type:
-            if _local(child.tag) == "DA" and child.get("fc") and child.get("fc") not in fcs:
-                fcs.append(child.get("fc", ""))
+            if _local(child.tag) == "DA" and child.get("fc"):
+                own = child.get("fc", "")
+                fcs += [fc for fc in ((own, "SG") if own == "SE" else (own,)) if fc not in fcs]
             elif _local(child.tag) == "SDO":
                 fcs += [fc for fc in self._do_fcs(child.get("type", ""), seen | {do_type_id}) if fc not in fcs]
         return fcs
@@ -554,6 +600,7 @@ class _SclBuilder:
 
     def _ln(self, ln: ET.Element, domain: str) -> Node:
         name = _ln_name(ln)
+        self.domain = domain
         node_type = self.types.get(("LNodeType", ln.get("lnType", "")))
         fc_components: dict[str, list[tuple[str, MmsType]]] = {}
         dos = _children(node_type, "DO") if node_type is not None else []
@@ -565,7 +612,11 @@ class _SclBuilder:
                         (do.get("name", ""), StructureType([(n, t) for n, t, _e in components])))
         blocks = self._control_blocks(ln, domain, name)
         for fc, items in blocks.items():
-            fc_components.setdefault(fc, []).extend((n, StructureType(c)) for n, c, _v in items)
+            block_types: list[tuple[str, MmsType]] = [(n, StructureType(c)) for n, c, _v in items]
+            if fc == "SP":  # the SGCB comes before the data objects
+                fc_components[fc] = block_types + fc_components.get(fc, [])
+            else:
+                fc_components.setdefault(fc, []).extend(block_types)
         order = {fc: i for i, fc in enumerate(FC_ORDER)}
         ln_type = StructureType([(fc, StructureType(comps))
                                  for fc, comps in sorted(fc_components.items(), key=lambda kv: (order.get(kv[0], 99), kv[0]))])
@@ -577,7 +628,7 @@ class _SclBuilder:
         for do in dos:
             for fc_node in ln_node.children.values():
                 target = fc_node.child(do.get("name", ""))
-                if target is not None and fc_node.name not in blocks:
+                if target is not None and target.name not in {n for n, _c, _v in blocks.get(fc_node.name, ())}:
                     self._defaults(target, do.get("type", ""))
         for fc, items in blocks.items():
             for block_name, _components, values in items:
@@ -644,7 +695,37 @@ class _SclBuilder:
                       "SmpRate": UIntData(int(sc.get("smpRate", "0")))}
             fc = "MS" if sc.get("multicast", "true") == "true" else "US"
             out.setdefault(fc, []).append((sc.get("name", ""), _MSVCB, values))
+        for setting in _children(ln, "SettingControl")[:1]:
+            count = max(1, int(setting.get("numOfSGs", "1")))
+            resv_tms = setting.get("resvTms", "")
+            self.setting_controls[domain] = SettingGroups(count, int(resv_tms) if resv_tms.isdigit() else SGCB_RESV_TMS)
+            values = {"NumOfSG": UIntData(count), "ActSG": UIntData(min(max(1, int(setting.get("actSG", "1"))), count))}
+            layout = [(n, t) for n, t in _SGCB if n != "ResvTms" or self.edition2]
+            out.setdefault("SP", []).append(("SGCB", layout, values))
         return out
+
+    def _groups(self, model: IedModel, domain: str) -> None:
+        """Every group's values of a logical device with an SGCB; SG and SE hold the active group's."""
+        groups = self.setting_controls.get(domain)
+        lns = model.logical_devices[domain]
+        if groups is None or "LLN0" not in lns:
+            return
+        active = model.get(ObjectName("LLN0$SP$SGCB$ActSG", domain))
+        assert isinstance(active, UIntData)
+        groups.values = {g: {} for g in range(1, groups.count + 1)}
+        for ln in lns.values():
+            sg = ln.child("SG")
+            for leaf in (sg.leaves() if sg is not None else ()):
+                key = group_key(leaf)
+                own = self.grouped.get((domain, key), {})
+                assert leaf.value is not None
+                for g, values in groups.values.items():
+                    values[key] = own.get(g, leaf.value)
+                leaf.value = groups.values[active.value][key]
+            se = ln.child("SE")
+            for leaf in (se.leaves() if se is not None else ()):
+                leaf.value = groups.values[active.value].get(group_key(leaf), leaf.value)
+        model.setting_groups[domain] = groups
 
     def build(self, ied_name: Optional[str], brcb_resv_tms: Optional[bool] = None) -> IedModel:
         ieds = _children(self.root, "IED")
@@ -682,6 +763,7 @@ class _SclBuilder:
                         members.append(ObjectName("$".join([member_ln, f.get("fc", "")] + path),
                                                   domains.get(f.get("ldInst", ""), domain)))
                     model.data_sets[ObjectName(f"{node.name}${ds.get('name', '')}", domain)] = members
+            self._groups(model, domain)
         return model
 
 

@@ -10,6 +10,8 @@ capture on ``lo`` and need Linux and root.
 - ``server_example_basic_io`` (port 10102): model, reads, types, reports;
 - ``server_example_control`` (port 10103): GGIO1.SPCSO1..4 in the four
   control models, SPCSO9 whose handler refuses every command;
+- ``server_example_sg`` (port 10104): LLN0's SGCB in PROT, five groups
+  of PTOC1's settings (SG, SE), no ResvTms;
 - ``server_example_goose`` (port 102, GOOSE on ``lo``): gcbEvents and
   gcbAnalogValues, whose AnIn1 changes every second;
 - ``sv_publisher_example lo``: two ASDUs (svpub1, svpub2) every 50 ms;
@@ -52,7 +54,7 @@ needs_raw = pytest.mark.skipif(
 )
 
 LD = "simpleIOGenericIO"
-BASIC_IO, CONTROL = 10102, 10103
+BASIC_IO, CONTROL, SETTING_GROUPS = 10102, 10103, 10104
 
 
 def _wait_port(port: int, timeout: float = 5.0) -> None:
@@ -84,6 +86,11 @@ def basic_io() -> Iterator[None]:
 @pytest.fixture(scope="module")
 def control_server() -> Iterator[None]:
     yield from _server("server_example_control", str(CONTROL), port=CONTROL)
+
+
+@pytest.fixture(scope="module")
+def sg_server() -> Iterator[None]:
+    yield from _server("server_example_sg", str(SETTING_GROUPS), port=SETTING_GROUPS)
 
 
 def test_association(basic_io) -> None:
@@ -463,3 +470,42 @@ def test_time_activated_controls(control_server, do: str) -> None:
     with MmsClient.connect("127.0.0.1", CONTROL) as client:
         result = operate(client, f"{LD}/GGIO1.{do}", True, oper_tm=datetime.now(timezone.utc) + timedelta(seconds=0.2))
         assert result.terminated == (do in ("SPCSO7", "SPCSO8"))
+
+
+def test_setting_groups(sg_server) -> None:
+    from open61850.data import FloatData
+    from open61850.mms import (
+        DataAccessError,
+        confirm_edit_sg_values,
+        read_sgcb,
+        select_active_sg,
+        select_edit_sg,
+    )
+    from open61850.mms.model import compare
+    from open61850.scl import load_model
+    from open61850.server import IedModel, MmsServer
+
+    cid, ld = f"{SCL_DIR}/sg_demo.cid", "DEMOPROT"
+    strval_sg, strval_se = f"{ld}/PTOC1$SG$StrVal$setMag$f", f"{ld}/PTOC1$SE$StrVal$setMag$f"
+    with MmsClient.connect("127.0.0.1", SETTING_GROUPS) as client, \
+            MmsClient.connect("127.0.0.1", SETTING_GROUPS) as other:
+        assert compare(load_model(cid), discover(client)) == []
+        theirs = client.get_type(f"{ld}/LLN0$SP$SGCB")
+        status = read_sgcb(client, ld)
+        assert (status.num_of_sg, status.act_sg, status.edit_sg, status.resv_tms) == (5, 1, 0, None)
+        select_active_sg(client, ld, 2)
+        assert client.read(strval_sg) == FloatData(2.0)
+        select_edit_sg(client, ld, 3)
+        assert client.read(strval_se) == FloatData(3.0)
+        with pytest.raises(DataAccessError) as refused:
+            other.write(strval_se, FloatData(9.0))
+        assert refused.value.code == 2  # temporarily-unavailable
+        client.write(strval_se, FloatData(3.25))
+        confirm_edit_sg_values(client, ld)
+        select_active_sg(client, ld, 3)
+        assert client.read(strval_sg) == FloatData(3.25) and read_sgcb(client, ld).edit_sg == 0
+    with MmsServer(IedModel.from_scl(cid), "127.0.0.1", 0) as ours:  # the same SGCB from the same SCL
+        ours.start()
+        with MmsClient.connect("127.0.0.1", ours.port) as client:
+            assert client.get_type(f"{ld}/LLN0$SP$SGCB") == theirs
+            assert read_sgcb(client, ld).num_of_sg == 5

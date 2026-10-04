@@ -14,6 +14,7 @@ RUN cmake -S /l -B /l/build -DBUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release >/dev
 RUN mkdir /out && cp /l/build/examples/server_example_basic_io/server_example_basic_io \
     /l/build/examples/server_example_control/server_example_control \
     /l/build/examples/server_example_goose/server_example_goose \
+    /l/build/examples/server_example_setting_groups/server_example_sg \
     /l/build/examples/sv_publisher/sv_publisher_example \
     /l/build/examples/goose_subscriber/goose_subscriber_example \
     /l/build/examples/iec61850_client_example1/iec61850_client_example1 \
@@ -24,7 +25,7 @@ RUN mkdir /out && cp /l/build/examples/server_example_basic_io/server_example_ba
  && mkdir /scl && cp /l/examples/server_example_basic_io/simpleIO_direct_control.cid \
     /l/examples/server_example_control/simpleIO_control_tests.cid \
     /l/examples/server_example_goose/simpleIO_direct_control_goose.cid \
-    /l/examples/iec61850_9_2_LE_example/sv.icd /scl/
+    /l/examples/iec61850_9_2_LE_example/sv.icd /l/examples/server_example_setting_groups/sg_demo.cid /scl/
 
 FROM python:3.13-slim
 COPY --from=build /out /usr/local/bin/

@@ -15,6 +15,9 @@ association (limits: the smaller of the client's and the server's), then
 confirmed requests in order: GetNameList (with continueAfter), Identify,
 Read (variables or a data set), Write, GetVariableAccessAttributes,
 GetNamedVariableListAttributes, Conclude. Anything else gets a Reject.
+Reports, controls and setting groups work through engines attached by
+:meth:`MmsServer.start` (:attr:`MmsServer.reports`, :attr:`~MmsServer.controls`,
+:attr:`~MmsServer.setting_groups`, the last when the model has an SGCB).
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from . import protocol
 from .control import ControlEngine
 from .model import IedModel
 from .reporting import ReportEngine
+from .settings import SettingGroupEngine
 
 __all__ = ["MmsServer", "ServerConnection", "ERROR_DEFINITION", "ERROR_ACCESS"]
 
@@ -193,7 +197,8 @@ class MmsServer:
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
-                 max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True) -> None:
+                 max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True,
+                 setting_groups: bool = True) -> None:
         self.model = model
         self.host = host
         self.port = port
@@ -209,6 +214,8 @@ class MmsServer:
         self.controls: Optional[ControlEngine] = None
         self.reports_enabled = reports
         self.reports: Optional[ReportEngine] = None
+        self.setting_groups_enabled = setting_groups
+        self.setting_groups: Optional[SettingGroupEngine] = None
         self.connections: list[ServerConnection] = []
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
@@ -232,6 +239,8 @@ class MmsServer:
             self.reports = ReportEngine(self)
         if self.controls_enabled and self.controls is None:
             self.controls = ControlEngine(self)
+        if self.setting_groups_enabled and self.setting_groups is None and self.model.setting_groups:
+            self.setting_groups = SettingGroupEngine(self)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))

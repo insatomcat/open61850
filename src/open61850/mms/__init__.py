@@ -9,6 +9,7 @@
 - :mod:`.client`: :class:`MmsClient`, requests matched by invokeID.
 - :mod:`.report`: IEC 61850 report decoding, OptFlds / TrgOps / ReasonCode.
 - :mod:`.rcb`: report control block status, reservation and enabling.
+- :mod:`.sgcb`: setting group control blocks (active group, edit, confirmation).
 - :mod:`.control`: controls (direct and SBO, normal and enhanced security).
 - :mod:`.types`: type descriptions (GetVariableAccessAttributes) and value labelling.
 - :mod:`.reference`: IEC 61850 references (``LD/LN.DO.DA [FC]``) and their MMS names.
@@ -38,6 +39,7 @@ from .pdu import (
 )
 from .reference import Reference, to_object_name
 from .report import OptFlds, ReasonCode, Report, ReportEntry, TrgOps, decode_report, is_report
+from .sgcb import SgcbStatus, confirm_edit_sg_values, read_sgcb, select_active_sg, select_edit_sg
 from .types import MmsType
 
 __all__ = [
@@ -48,4 +50,5 @@ __all__ = [
     "DataAccessError", "ServiceError",
     "operate", "Origin", "ControlResult", "ControlError", "LastApplError",
     "Reference", "to_object_name", "discover", "ServerModel", "LogicalDevice", "LogicalNode",
+    "SgcbStatus", "read_sgcb", "select_active_sg", "select_edit_sg", "confirm_edit_sg_values",
 ]
