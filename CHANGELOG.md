@@ -7,6 +7,12 @@
   attribute, or several written at the same instant, make one report
   entry instead of one per attribute (a server application writing a
   status's `general`, then its phases, sent a report for each).
+- Controls show IEC 61850-7-3 edition 2.1's `opRcvd`, `opOk` and `tOpOk`
+  (FC OR) when the object's type has them: `opRcvd` TRUE from an
+  accepted Oper, `opOk` TRUE with `tOpOk` once the handler has given the
+  order (done, or in execution), both FALSE again when the command ends
+  (`finish` for one in execution). A test command is received, never
+  given.
 
 ## 0.9.5 (2026-10-09)
 

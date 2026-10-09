@@ -14,7 +14,7 @@ import pytest
 from conftest import DATA_DIR
 
 from open61850 import ber, scl
-from open61850.data import BoolData, IntData, OctetStringData, StructureData, UIntData, VisibleStringData
+from open61850.data import BoolData, IntData, OctetStringData, StructureData, TimestampData, UIntData, VisibleStringData
 from open61850.mms import (
     OBJECT_CLASS_DOMAIN,
     OBJECT_CLASS_NAMED_VARIABLE,
@@ -415,6 +415,31 @@ def test_control_in_execution_until_finished(switches: MmsServer) -> None:
             operate(client, f"{CTRL}/CSWI3.Pos", False)
         assert refused.value.stage == "termination" and refused.value.last_appl_error.add_cause == 16
         assert not switches.controls.executing(f"{CTRL}/CSWI3.Pos")
+
+
+def test_control_shows_the_operation_received_and_given(switches: MmsServer) -> None:
+    """7-3 edition 2.1's opRcvd and opOk (FC OR): received, given with tOpOk, both down at the end of the command;
+    a test command received only."""
+    from open61850.server.control import IN_EXECUTION
+
+    seen: list[tuple[str, bool]] = []
+    switches.model.add_listener(lambda nodes: seen.extend(
+        (f"{n.parent.parent.parent.name}.{n.name}", n.data().value) for n in nodes if n.name in ("opRcvd", "opOk")))
+    switches.controls.set_handler(f"{CTRL}/CSWI3.Pos", lambda command: IN_EXECUTION)
+    with MmsClient.connect("127.0.0.1", switches.port) as client:
+        operate(client, f"{CTRL}/CSWI1.Pos", True)
+        assert seen == [("CSWI1.opRcvd", True), ("CSWI1.opOk", True), ("CSWI1.opOk", False), ("CSWI1.opRcvd", False)]
+        assert client.read(f"{CTRL}/CSWI1.Pos.tOpOk[OR]") != TimestampData(datetime.fromtimestamp(0, timezone.utc))
+        seen.clear()
+        operate(client, f"{CTRL}/CSWI1.Pos", False, test=True)
+        assert seen == [("CSWI1.opRcvd", True), ("CSWI1.opRcvd", False)]
+        seen.clear()
+        threading.Thread(target=lambda: operate(client, f"{CTRL}/CSWI3.Pos", True), daemon=True).start()
+        while not switches.controls.executing(f"{CTRL}/CSWI3.Pos"):
+            time.sleep(0.01)
+        assert seen == [("CSWI3.opRcvd", True), ("CSWI3.opOk", True)]
+        switches.controls.finish(f"{CTRL}/CSWI3.Pos")
+        assert seen[2:] == [("CSWI3.opOk", False), ("CSWI3.opRcvd", False)]
 
 
 def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:

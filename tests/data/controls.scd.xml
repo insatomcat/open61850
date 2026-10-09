@@ -24,6 +24,9 @@
       <DA name="stVal" bType="Dbpos" fc="ST" dchg="true"><Val>off</Val></DA>
       <DA name="q" bType="Quality" fc="ST" qchg="true"/>
       <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="opRcvd" bType="BOOLEAN" fc="OR" dchg="true"/>
+      <DA name="opOk" bType="BOOLEAN" fc="OR" dchg="true"/>
+      <DA name="tOpOk" bType="Timestamp" fc="OR"/>
       <DA name="SBO" bType="ObjRef" fc="CO"/>
       <DA name="SBOw" bType="Struct" type="Oper_T" fc="CO"/>
       <DA name="Oper" bType="Struct" type="Oper_T" fc="CO"/>

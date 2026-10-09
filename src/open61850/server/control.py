@@ -39,6 +39,12 @@ command's end comes later (a switch reaching its position): the object
 refuses other commands (command-already-in-execution) until the
 application calls :meth:`ControlEngine.finish`, which sends the
 CommandTermination in enhanced security, negative with an AddCause.
+
+An object whose type has IEC 61850-7-3 edition 2.1's ``opRcvd``, ``opOk``
+and ``tOpOk`` (FC OR) shows the command: ``opRcvd`` TRUE from an accepted
+Oper, ``opOk`` TRUE and ``tOpOk`` its time once the handler has given the
+order (done, or in execution), both FALSE again when the command ends. A
+command with Test set is received, never given.
 """
 
 from __future__ import annotations
@@ -198,6 +204,7 @@ class ControlEngine:
             execution = self._executions.pop(_key(reference), None)
         if execution is None:
             return False
+        self._ended(execution.command)
         if execution.enhanced and execution.client is not None:
             self._send_termination(execution.client, execution.name, execution.command, execution.oper, cause)
         return True
@@ -293,6 +300,7 @@ class ControlEngine:
                 return self._refuse(connection, name, command, cause)
             node.assign(value)
             self._selections.pop(key, None)
+            self._flag(command, "opRcvd", True)
             delay = _delay(fields.get("operTm"))
             enhanced = model in (DIRECT_ENHANCED, SBO_ENHANCED)
             if delay > 0 or enhanced:  # accepted now, executed later: the object is taken from now on
@@ -352,12 +360,28 @@ class ControlEngine:
             if current is not None and current.command is not command:
                 return ADD_CAUSE_COMMAND_IN_EXECUTION
             cause = self._execute(command)
+            if cause in (None, IN_EXECUTION) and not command.test:  # the order given
+                self._flag(command, "opOk", True, stamp=True)
             if cause == IN_EXECUTION:
                 self._executions[key] = _Execution(current.client if current is not None else connection, name,
                                                    command, oper, enhanced)
             else:
                 self._executions.pop(key, None)
+                self._ended(command)
             return cause
+
+    def _flag(self, command: Command, attribute: str, value: bool, *, stamp: bool = False) -> None:
+        """``opRcvd`` or ``opOk`` of the command's object, when its type has it; ``tOpOk`` with ``stamp``."""
+        ln, _, do = command.object_item.split("$", 2)
+        base = f"{command.domain}/{ln}$OR${do}"
+        if stamp and self.model.node(f"{base}$tOpOk") is not None:
+            self.model.set(f"{base}$tOpOk", TimestampData(datetime.now(timezone.utc)), notify=False)
+        if self.model.node(f"{base}${attribute}") is not None:
+            self.model.set(f"{base}${attribute}", value)
+
+    def _ended(self, command: Command) -> None:
+        self._flag(command, "opOk", False)
+        self._flag(command, "opRcvd", False)
 
     def _terminate(self, connection: object, name: ObjectName, command: Command, oper: IECData) -> None:
         cause = self._run(connection, name, command, oper, True)
