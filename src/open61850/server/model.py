@@ -26,6 +26,7 @@ holds the active group's values, FC SE the edited group's; the server's
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
@@ -301,6 +302,7 @@ class IedModel:
         self.setting_groups: dict[str, SettingGroups] = {}  # domain -> its groups, when LLN0 has a SettingControl
         self.lock = threading.RLock()
         self._listeners: list[ChangeListener] = []
+        self._batches = threading.local()  # this thread's changes held back by batch()
 
     # --- navigation ------------------------------------------------------------
 
@@ -383,7 +385,28 @@ class IedModel:
     def remove_listener(self, listener: ChangeListener) -> None:
         self._listeners.remove(listener)
 
-    def _notify(self, changed: list[Node]) -> None:
+    @contextlib.contextmanager
+    def batch(self) -> Iterator[None]:
+        """Changes this thread makes inside reach the listeners together, at the end: a data object written
+        attribute by attribute, or several at the same instant, make one report entry. Nested batches end with the
+        outermost."""
+        held = getattr(self._batches, "held", None)
+        if held is not None:
+            yield
+            return
+        self._batches.held = []
+        try:
+            yield
+        finally:
+            changed, self._batches.held = self._batches.held, None
+            if changed:
+                self._notify(changed, now=True)
+
+    def _notify(self, changed: list[Node], *, now: bool = False) -> None:
+        held = getattr(self._batches, "held", None)
+        if held is not None and not now:
+            held.extend(changed)
+            return
         for listener in list(self._listeners):
             listener(changed)
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `IedModel.batch()`: the changes a thread makes inside reach the
+  listeners together at its end, so a data object written attribute by
+  attribute, or several written at the same instant, make one report
+  entry instead of one per attribute (a server application writing a
+  status's `general`, then its phases, sent a report for each).
+
 ## 0.9.5 (2026-10-09)
 
 - The MMS server's controls: `ControlEngine.set_check` runs a check

@@ -74,6 +74,21 @@ def test_set_checks_types_and_notifies(model: IedModel) -> None:
         model.set(f"{PROT}/PTRC1.Tr.q[ST]", OctetStringData(b"x"))
 
 
+def test_a_batch_notifies_once_at_its_end(model: IedModel) -> None:
+    seen = []
+    model.add_listener(lambda nodes: seen.append([n.item for n in nodes]))
+    with model.batch():
+        model.set(f"{PROT}/PTRC1.Tr.general[ST]", True)
+        with model.batch():  # nested: ends with the outer one
+            model.set("IED01MU/IMMXU1.A.phsA.cVal.mag.f[MX]", 12.5)
+        assert seen == []
+    assert seen == [["PTRC1$ST$Tr$general", "IMMXU1$MX$A$phsA$cVal$mag$f"]]
+    with pytest.raises(KeyError), model.batch():  # what was changed before the error still goes out
+        model.set(f"{PROT}/PTRC1.Tr.general[ST]", False)
+        model.set(f"{PROT}/LLN0$ST$Nope", 1)
+    assert seen[-1] == ["PTRC1$ST$Tr$general"]
+
+
 def test_association_names_and_model(server: MmsServer) -> None:
     with MmsClient.connect("127.0.0.1", server.port) as client:
         association = client.association
@@ -197,6 +212,18 @@ def test_buftm_gathers_changes(server: MmsServer, model: IedModel) -> None:
         model.set(TRIP, False)  # the same member again: the first entry goes at once
         reports = _reports(q, 0.3)
         assert [[(e.index, e.value) for e in r.entries] for r in reports] == [[(0, BoolData(True))], [(0, BoolData(False))]]
+
+
+def test_a_batch_makes_one_report(server: MmsServer, model: IedModel) -> None:
+    q: queue.Queue = queue.Queue()
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, general_interrogation=False))
+        with model.batch():  # without, three reports
+            model.set(TRIP, True)
+            model.set(TRIP, False)
+            model.set(TRIP, True)
+        (report,) = _reports(q, 0.2)
+        assert [(e.index, e.value) for e in report.entries] == [(0, BoolData(True))]
 
 
 def test_buffered_entries_replayed_from_entry_id(server: MmsServer, model: IedModel) -> None:
