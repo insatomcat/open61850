@@ -30,6 +30,15 @@ default handler copies ctlVal to ``ST$DO$stVal`` (a Dbpos gets on or off from
 a boolean) and stamps ``t``, ``origin`` and ``ctlNum`` when present, which is
 what a simulated switch or output does. A command with Test set is checked
 but not executed.
+
+A check (:meth:`ControlEngine.set_check`) runs before the response, in every
+control model, on SBOw and on Oper: an AddCause refuses the request (the
+LastApplError, then the negative response), as libiec61850's check handler
+does. The handler then executes; it may return :data:`IN_EXECUTION` when the
+command's end comes later (a switch reaching its position): the object
+refuses other commands (command-already-in-execution) until the
+application calls :meth:`ControlEngine.finish`, which sends the
+CommandTermination in enhanced security, negative with an AddCause.
 """
 
 from __future__ import annotations
@@ -58,22 +67,51 @@ from . import protocol
 from .model import ACCESS_OBJECT_ACCESS_DENIED, ACCESS_OBJECT_NON_EXISTENT, ACCESS_TYPE_INCONSISTENT, IedModel, to_data
 
 __all__ = [
+    "ADD_CAUSE_UNKNOWN",
     "ADD_CAUSE_NOT_SUPPORTED",
+    "ADD_CAUSE_BLOCKED_BY_SWITCHING_HIERARCHY",
+    "ADD_CAUSE_SELECT_FAILED",
+    "ADD_CAUSE_INVALID_POSITION",
+    "ADD_CAUSE_POSITION_REACHED",
+    "ADD_CAUSE_BLOCKED_BY_MODE",
+    "ADD_CAUSE_BLOCKED_BY_PROCESS",
     "ADD_CAUSE_BLOCKED_BY_INTERLOCKING",
+    "ADD_CAUSE_BLOCKED_BY_SYNCHROCHECK",
+    "ADD_CAUSE_COMMAND_IN_EXECUTION",
+    "ADD_CAUSE_BLOCKED_BY_HEALTH",
+    "ADD_CAUSE_TIME_LIMIT_OVER",
+    "ADD_CAUSE_ABORTION_BY_TRIP",
     "ADD_CAUSE_OBJECT_NOT_SELECTED",
     "ADD_CAUSE_OBJECT_ALREADY_SELECTED",
+    "ADD_CAUSE_NO_ACCESS_AUTHORITY",
+    "ADD_CAUSE_INCONSISTENT_PARAMETERS",
+    "IN_EXECUTION",
     "Command",
+    "ControlCheck",
     "ControlHandler",
     "ControlEngine",
 ]
 
+# IEC 61850-7-2 Ed2 AddCause (the full list: open61850.mms.control.ADD_CAUSES)
 ADD_CAUSE_UNKNOWN = 0
 ADD_CAUSE_NOT_SUPPORTED = 1
+ADD_CAUSE_BLOCKED_BY_SWITCHING_HIERARCHY = 2
+ADD_CAUSE_SELECT_FAILED = 3
+ADD_CAUSE_INVALID_POSITION = 4
+ADD_CAUSE_POSITION_REACHED = 5
+ADD_CAUSE_BLOCKED_BY_MODE = 8
+ADD_CAUSE_BLOCKED_BY_PROCESS = 9
 ADD_CAUSE_BLOCKED_BY_INTERLOCKING = 10
+ADD_CAUSE_BLOCKED_BY_SYNCHROCHECK = 11
 ADD_CAUSE_COMMAND_IN_EXECUTION = 12
+ADD_CAUSE_BLOCKED_BY_HEALTH = 13
+ADD_CAUSE_TIME_LIMIT_OVER = 16
+ADD_CAUSE_ABORTION_BY_TRIP = 17
 ADD_CAUSE_OBJECT_NOT_SELECTED = 18
 ADD_CAUSE_OBJECT_ALREADY_SELECTED = 19
+ADD_CAUSE_NO_ACCESS_AUTHORITY = 20
 ADD_CAUSE_INCONSISTENT_PARAMETERS = 26
+IN_EXECUTION = -1  # a handler's answer: started, ended later by ControlEngine.finish
 _ERROR_UNKNOWN = 1  # LastApplError.Error
 
 STATUS_ONLY, DIRECT_NORMAL, SBO_NORMAL, DIRECT_ENHANCED, SBO_ENHANCED = range(5)
@@ -100,13 +138,23 @@ class Command:
         return f"{self.domain}/{self.object_item}"
 
 
-ControlHandler = Callable[[Command], Optional[int]]  # None: done; an int: the AddCause of a refusal
+ControlHandler = Callable[[Command], Optional[int]]  # None: done; IN_EXECUTION: ends later; an int: an AddCause
+ControlCheck = Callable[[Command], Optional[int]]  # None: accepted; an int: the AddCause of a refusal
 
 
 @dataclass
 class _Selection:
     client: object
     until: float
+
+
+@dataclass
+class _Execution:
+    client: object
+    name: ObjectName
+    command: Command
+    oper: IECData
+    enhanced: bool
 
 
 class ControlEngine:
@@ -119,7 +167,9 @@ class ControlEngine:
         self.server = server
         self.model: IedModel = server.model
         self.handlers: dict[tuple[str, str], ControlHandler] = {}
+        self.checks: dict[tuple[str, str], ControlCheck] = {}
         self._selections: dict[tuple[str, str], _Selection] = {}
+        self._executions: dict[tuple[str, str], _Execution] = {}
         self._lock = threading.RLock()
         server.write_hooks.insert(0, self._on_write)
         server.read_hooks.append(self._on_read)
@@ -127,11 +177,30 @@ class ControlEngine:
 
     def set_handler(self, reference: str, handler: ControlHandler) -> None:
         """The handler of an object: ``LD/LN.DO`` or ``LD/LN$CO$DO``."""
-        domain, _, item = reference.partition("/")
-        if "$" not in item:
-            ln, _, do = item.partition(".")
-            item = f"{ln}$CO${do}"
-        self.handlers[(domain, item)] = handler
+        self.handlers[_key(reference)] = handler
+
+    def set_check(self, reference: str, check: ControlCheck) -> None:
+        """The check of an object, run before the response to SBOw and Oper: ``LD/LN.DO`` or ``LD/LN$CO$DO``."""
+        self.checks[_key(reference)] = check
+
+    def executing(self, reference: str) -> bool:
+        """Whether a command on the object is in execution (its handler returned :data:`IN_EXECUTION`)."""
+        with self._lock:
+            return _key(reference) in self._executions
+
+    def finish(self, reference: str, cause: Optional[int] = None) -> bool:
+        """End the command in execution on an object: done (None) or failed (an AddCause).
+
+        In enhanced security the CommandTermination goes to the client that sent it, if still connected.
+        False when no command was in execution.
+        """
+        with self._lock:
+            execution = self._executions.pop(_key(reference), None)
+        if execution is None:
+            return False
+        if execution.enhanced and execution.client is not None:
+            self._send_termination(execution.client, execution.name, execution.command, execution.oper, cause)
+        return True
 
     # --- helpers -------------------------------------------------------------------
 
@@ -208,6 +277,9 @@ class ControlEngine:
                 holder = self._selected_by(key)
                 if holder is not None and holder is not connection:
                     return self._refuse(connection, name, command, ADD_CAUSE_OBJECT_ALREADY_SELECTED)
+                cause = self._check(key, command)
+                if cause is not None:
+                    return self._refuse(connection, name, command, cause)
                 self._selections[key] = _Selection(connection, time.monotonic() + self._sbo_timeout(domain, parts[0], parts[2]))
                 node.assign(value)
                 return True
@@ -216,19 +288,25 @@ class ControlEngine:
                 return self._refuse(connection, name, command, ADD_CAUSE_OBJECT_NOT_SELECTED)
             if not self._fits_value(domain, key[1], command.ctl_val):
                 return self._refuse(connection, name, command, ADD_CAUSE_INCONSISTENT_PARAMETERS)
+            cause = self._check(key, command)
+            if cause is not None:
+                return self._refuse(connection, name, command, cause)
             node.assign(value)
             self._selections.pop(key, None)
             delay = _delay(fields.get("operTm"))
+            enhanced = model in (DIRECT_ENHANCED, SBO_ENHANCED)
+            if delay > 0 or enhanced:  # accepted now, executed later: the object is taken from now on
+                self._executions[key] = _Execution(connection, name, command, value, enhanced)
             if delay > 0:  # time-activated: accepted now, executed at operTm
                 if model in (DIRECT_NORMAL, SBO_NORMAL):
-                    _later(delay, lambda: self._execute(command))
+                    _later(delay, lambda: self._run(connection, name, command, value, False))
                 else:
                     connection.after_response.append(  # type: ignore[attr-defined]
                         lambda: _later(delay, lambda: self._terminate(connection, name, command, value)))
                 return True
             if model in (DIRECT_NORMAL, SBO_NORMAL):
-                cause = self._execute(command)
-                if cause is not None:
+                cause = self._run(connection, name, command, value, False)
+                if cause is not None and cause != IN_EXECUTION:
                     return self._refuse(connection, name, command, cause)
                 return True
             # enhanced security: positive response now, execution and termination after it
@@ -245,6 +323,17 @@ class ControlEngine:
             return False
         return type(ctl_val) is type(node.data())
 
+    def _check(self, key: tuple[str, str], command: Command) -> Optional[int]:
+        if key in self._executions:
+            return ADD_CAUSE_COMMAND_IN_EXECUTION
+        check = self.checks.get(key)
+        if check is None:
+            return None
+        try:
+            return check(command)
+        except Exception:
+            return ADD_CAUSE_UNKNOWN
+
     def _execute(self, command: Command) -> Optional[int]:
         if command.test:
             return None
@@ -254,8 +343,29 @@ class ControlEngine:
         except Exception:
             return ADD_CAUSE_UNKNOWN
 
+    def _run(self, connection: object, name: ObjectName, command: Command, oper: IECData,
+             enhanced: bool) -> Optional[int]:
+        """Execute; a handler's IN_EXECUTION leaves the object in execution, the command done for now."""
+        with self._lock:
+            key = (command.domain, command.object_item)
+            current = self._executions.get(key)
+            if current is not None and current.command is not command:
+                return ADD_CAUSE_COMMAND_IN_EXECUTION
+            cause = self._execute(command)
+            if cause == IN_EXECUTION:
+                self._executions[key] = _Execution(current.client if current is not None else connection, name,
+                                                   command, oper, enhanced)
+            else:
+                self._executions.pop(key, None)
+            return cause
+
     def _terminate(self, connection: object, name: ObjectName, command: Command, oper: IECData) -> None:
-        cause = self._execute(command)
+        cause = self._run(connection, name, command, oper, True)
+        if cause != IN_EXECUTION:
+            self._send_termination(connection, name, command, oper, cause)
+
+    def _send_termination(self, connection: object, name: ObjectName, command: Command, oper: IECData,
+                          cause: Optional[int]) -> None:
         variables = [name]
         values: list[Union[IECData, int]] = [oper]
         if cause is not None:
@@ -280,6 +390,9 @@ class ControlEngine:
         with self._lock:
             for key in [k for k, s in self._selections.items() if s.client is connection]:
                 del self._selections[key]
+            for execution in self._executions.values():  # the command goes on, its termination has no one to go to
+                if execution.client is connection:
+                    execution.client = None
 
     # --- the default handler ----------------------------------------------------------------
 
@@ -306,6 +419,15 @@ class ControlEngine:
         for reference, new in changes:
             self.model.set(reference, new)
         return None
+
+
+def _key(reference: str) -> tuple[str, str]:
+    """``LD/LN.DO`` or ``LD/LN$CO$DO`` as (domain, ``LN$CO$DO``)."""
+    domain, _, item = reference.partition("/")
+    if "$" not in item:
+        ln, _, do = item.partition(".")
+        item = f"{ln}$CO${do}"
+    return domain, item
 
 
 def _delay(oper_tm: Optional[IECData]) -> float:

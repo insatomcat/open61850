@@ -139,6 +139,7 @@ def test_server_stop_closes_clients(model: IedModel) -> None:
 # --- reports -----------------------------------------------------------------------
 
 import queue  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
 
 from open61850.mms import decode_report, rcb  # noqa: E402
@@ -338,6 +339,55 @@ def test_control_test_flag_and_time_activation(switches: MmsServer) -> None:
         (command,) = commands
         assert (command.reference, command.ctl_val, command.ctl_num) == (f"{CTRL}/CSWI1$CO$Pos", BoolData(True), 3)
         assert command.synchro_check and not command.interlock_check and not command.test
+
+
+def test_control_checks_refuse_before_the_response(switches: MmsServer) -> None:
+    executed = []
+    for ln in ("CSWI3", "CSWI4"):
+        switches.controls.set_check(f"{CTRL}/{ln}.Pos", lambda command: 10)  # blocked-by-interlocking
+        switches.controls.set_handler(f"{CTRL}/{ln}.Pos", executed.append)
+    with MmsClient.connect("127.0.0.1", switches.port) as client:
+        with pytest.raises(ControlError) as refused:  # enhanced security: refused at Oper, not by the termination
+            operate(client, f"{CTRL}/CSWI3.Pos", True)
+        assert refused.value.stage == "operate" and refused.value.last_appl_error.add_cause == 10
+        with pytest.raises(ControlError) as refused:  # SBOw is checked too
+            operate(client, f"{CTRL}/CSWI4.Pos", True)
+        assert refused.value.stage == "select" and refused.value.last_appl_error.add_cause == 10
+    assert executed == []
+
+
+def test_control_in_execution_until_finished(switches: MmsServer) -> None:
+    from open61850.server.control import ADD_CAUSE_TIME_LIMIT_OVER, IN_EXECUTION
+
+    for ln in ("CSWI1", "CSWI3"):
+        switches.controls.set_handler(f"{CTRL}/{ln}.Pos", lambda command: IN_EXECUTION)
+    with MmsClient.connect("127.0.0.1", switches.port) as client, \
+            MmsClient.connect("127.0.0.1", switches.port) as other:
+        operate(client, f"{CTRL}/CSWI1.Pos", True)  # normal security: done for the client at once
+        assert switches.controls.executing(f"{CTRL}/CSWI1.Pos")
+        with pytest.raises(ControlError) as refused:
+            operate(other, f"{CTRL}/CSWI1.Pos", False)
+        assert refused.value.last_appl_error.add_cause == 12  # command-already-in-execution
+        assert switches.controls.finish(f"{CTRL}/CSWI1.Pos") and not switches.controls.finish(f"{CTRL}/CSWI1.Pos")
+        operate(other, f"{CTRL}/CSWI1.Pos", False)
+
+        def finish_later(cause: object) -> None:
+            def run() -> None:
+                while not switches.controls.executing(f"{CTRL}/CSWI3.Pos"):
+                    time.sleep(0.01)
+                time.sleep(0.2)
+                switches.controls.finish(f"{CTRL}/CSWI3.Pos", cause)  # type: ignore[arg-type]
+            threading.Thread(target=run, daemon=True).start()
+
+        finish_later(None)
+        start = time.monotonic()
+        result = operate(client, f"{CTRL}/CSWI3.Pos", True)  # enhanced: the termination waits for finish
+        assert result.terminated and time.monotonic() - start >= 0.2
+        finish_later(ADD_CAUSE_TIME_LIMIT_OVER)
+        with pytest.raises(ControlError) as refused:
+            operate(client, f"{CTRL}/CSWI3.Pos", False)
+        assert refused.value.stage == "termination" and refused.value.last_appl_error.add_cause == 16
+        assert not switches.controls.executing(f"{CTRL}/CSWI3.Pos")
 
 
 def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:

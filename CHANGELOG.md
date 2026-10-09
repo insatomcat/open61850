@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server's controls: `ControlEngine.set_check` runs a check
+  before the response to SBOw and Oper, in every control model, and
+  refuses with its AddCause (libiec61850's check handler): an
+  interlocking or authority refusal now reaches an enhanced security
+  client at Oper instead of in a negative CommandTermination. A handler
+  may return `IN_EXECUTION` for a command whose end comes later (a
+  switch reaching its position): the object refuses other commands
+  (command-already-in-execution) until the application calls
+  `ControlEngine.finish(reference, cause)`, which sends the
+  CommandTermination, negative with an AddCause such as
+  time-limit-over. `ControlEngine.executing` tells whether a command is
+  in execution, and `ADD_CAUSE_*` names the causes of IEC 61850-7-2.
+
 ## 0.9.4 (2026-10-04)
 
 - The MMS server has setting groups (IEC 61850-7-2 clause 16): a
