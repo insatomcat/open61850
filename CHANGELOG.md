@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.5 (2026-10-09)
 
 - The MMS server's controls: `ControlEngine.set_check` runs a check
   before the response to SBOw and Oper, in every control model, and
