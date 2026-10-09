@@ -251,10 +251,11 @@ class MmsServer:
         self._thread.start()
 
     def _accept_loop(self) -> None:
-        assert self._sock is not None
+        sock = self._sock  # stop() forgets it: the loop keeps its own
+        assert sock is not None
         while True:
             try:
-                client, peer = self._sock.accept()
+                client, peer = sock.accept()
             except OSError:
                 return  # closed by stop()
             threading.Thread(target=self._serve, args=(client, peer), name=f"mms-{peer[0]}", daemon=True).start()

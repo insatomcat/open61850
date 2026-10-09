@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `MmsServer.stop()` no longer leaves its accept thread ending on an
+  AttributeError when a client connected as the server stopped.
+
 ## 0.9.6 (2026-10-09)
 
 - `IedModel.batch()`: the changes a thread makes inside reach the
