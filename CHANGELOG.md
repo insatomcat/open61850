@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.6 (2026-10-09)
 
 - `IedModel.batch()`: the changes a thread makes inside reach the
   listeners together at its end, so a data object written attribute by
