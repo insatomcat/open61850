@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.8 (2026-10-11)
 
 - The MMS server ends the reservation it keeps for a buffered block's
   client that left: after `ResvTms` seconds, `ResvTms` goes back to 0
