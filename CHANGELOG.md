@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.7 (2026-10-11)
 
 - `MmsServer.stop()` no longer leaves its accept thread ending on an
   AttributeError when a client connected as the server stopped.
