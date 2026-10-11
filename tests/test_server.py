@@ -245,6 +245,33 @@ def test_buffered_entries_replayed_from_entry_id(server: MmsServer, model: IedMo
         assert _reports(q, 0.2) == []  # purged
 
 
+def test_buffer_overflow_only_when_unsent_entries_are_dropped(model: IedModel, monkeypatch: pytest.MonkeyPatch) -> None:
+    from open61850.server import reporting
+
+    monkeypatch.setattr(reporting, "BUFFER_ENTRIES", 5)
+    q: queue.Queue = queue.Queue()
+    with MmsServer(model, "127.0.0.1", 0) as server:
+        server.start()
+        with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+            settings = rcb.RcbSettings(intg_pd_ms=0, purge_buf=True, resv_tms=2, general_interrogation=False)
+            rcb.enable(client, BRCBS[0], settings)
+            for i in range(8):  # beyond the buffer, each entry sent as it is made: nothing is lost
+                model.set(TRIP, i % 2 == 0)
+            live = _reports(q, 0.2)
+            assert [r.buf_ovfl for r in live] == [False] * 8
+        deadline = time.monotonic() + 3
+        while model.get(f"{PROT}/LLN0$BR$brcbTrip01$RptEna") == BoolData(True) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        for i in range(8):  # the client is gone: the buffer drops three entries it never sent
+            model.set(TRIP, i % 2 == 0)
+        with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+            settings = rcb.RcbSettings(intg_pd_ms=0, entry_id=live[-1].entry_id, general_interrogation=False)
+            rcb.enable(client, BRCBS[0], settings)
+            assert [r.buf_ovfl for r in _reports(q, 0.2)] == [True] + [False] * 4
+            model.set(TRIP, True)
+            assert [r.buf_ovfl for r in _reports(q, 0.2)] == [False]
+
+
 def test_disconnect_disables_the_block(server: MmsServer, model: IedModel) -> None:
     client = MmsClient.connect("127.0.0.1", server.port)
     rcb.enable(client, BRCBS[1], rcb.RcbSettings(intg_pd_ms=0, resv_tms=0, general_interrogation=False))

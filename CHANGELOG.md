@@ -4,6 +4,10 @@
 
 - `MmsServer.stop()` no longer leaves its accept thread ending on an
   AttributeError when a client connected as the server stopped.
+- The MMS server's buffered reports say `BufOvfl` only when the full
+  buffer dropped an entry no client had been sent. Once a block had made
+  1000 entries, every report to its enabled client said TRUE, though the
+  entry dropped had been sent.
 
 ## 0.9.6 (2026-10-09)
 

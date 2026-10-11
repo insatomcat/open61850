@@ -17,7 +17,8 @@ report control blocks work:
   gathers the entries of that many milliseconds into one report;
 - IntgPd sends integrity reports; a BRCB keeps its entries in a buffer
   (EntryID, BufOvfl) that an enabling client receives from the entry after
-  EntryID (all of it when EntryID is zero);
+  EntryID (all of it when EntryID is zero); BufOvfl is TRUE in the first
+  report after the full buffer dropped an entry no client had been sent;
 - when a client goes, its blocks are disabled; a BRCB stays reserved for
   ResvTms seconds.
 
@@ -91,7 +92,8 @@ class ReportControl:
         self.reserved_until: Optional[float] = None  # a BRCB kept after its client left
         self.pending: Optional[_Entry] = None  # gathered for BufTm
         self.buffer: collections.deque[_Entry] = collections.deque(maxlen=BUFFER_ENTRIES)
-        self.overflowed = False
+        self.overflowed = False  # the buffer dropped an entry no client had been sent
+        self.sent = 0  # EntryID of the last entry sent to a client
         self.next_entry = 1
         self.integrity_due: Optional[float] = None
         self.ever_enabled = False  # a BRCB buffers from its first enabling on
@@ -397,7 +399,7 @@ class ReportEngine:
 
     def _deliver(self, rcb: ReportControl, entry: _Entry) -> None:
         if rcb.buffered:
-            if len(rcb.buffer) == rcb.buffer.maxlen:
+            if len(rcb.buffer) == rcb.buffer.maxlen and rcb.buffer[0].entry_id > rcb.sent:
                 rcb.overflowed = True
             rcb.buffer.append(entry)
             rcb.set_attr("EntryID", OctetStringData(entry.entry_id.to_bytes(8, "big")))
@@ -439,6 +441,7 @@ class ReportEngine:
         modulo = 256 if size is not None and getattr(size.mms_type, "size", 8) == 8 else 65536
         rcb.set_attr("SqNum", UIntData((sq_num + 1) % modulo))
         rcb.overflowed = False
+        rcb.sent = max(rcb.sent, entry.entry_id)
         connection = rcb.owner
         if connection is not None:
             self.server.broadcast(protocol.information_report(values, list_name="RPT"), to=connection)  # type: ignore[arg-type]
