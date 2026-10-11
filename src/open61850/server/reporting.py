@@ -20,7 +20,7 @@ report control blocks work:
   EntryID (all of it when EntryID is zero); BufOvfl is TRUE in the first
   report after the full buffer dropped an entry no client had been sent;
 - when a client goes, its blocks are disabled; a BRCB stays reserved for
-  ResvTms seconds.
+  ResvTms seconds, then ResvTms goes back to 0 and the block is free.
 
 Reports are informationReports on ``RPT``: RptID, OptFlds, then the
 optional fields OptFlds asks for, the inclusion bit string, the data
@@ -293,6 +293,15 @@ class ReportEngine:
                 resv_tms = rcb.attr("ResvTms")
                 keep = resv_tms.value if isinstance(resv_tms, IntData) and resv_tms.value > 0 else 0
                 rcb.release(keep_seconds=keep if rcb.buffered else 0)
+                if rcb.reserved_until is not None:
+                    self._at(rcb.reserved_until, lambda rcb=rcb, due=rcb.reserved_until: self._lapse(rcb, due))
+
+    def _lapse(self, rcb: ReportControl, due: float) -> None:
+        """The reservation kept for a client that left ends: the block is free again, and says so (ResvTms 0)."""
+        with self.model.lock:
+            if rcb.owner is None and rcb.reserved_until == due:
+                rcb.release()
+                rcb.set_attr("ResvTms", IntData(0))
 
     # --- enabling ------------------------------------------------------------------------
 

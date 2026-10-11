@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server ends the reservation it keeps for a buffered block's
+  client that left: after `ResvTms` seconds, `ResvTms` goes back to 0
+  (and `Owner` to none). It stayed at its value, so that a client looking
+  for a free instance (`rcb.find_free`) found the block reserved for
+  ever, and a client that associated again a few times found none left.
+
 ## 0.9.7 (2026-10-11)
 
 - `MmsServer.stop()` no longer leaves its accept thread ending on an

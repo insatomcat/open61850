@@ -272,6 +272,23 @@ def test_buffer_overflow_only_when_unsent_entries_are_dropped(model: IedModel, m
             assert [r.buf_ovfl for r in _reports(q, 0.2)] == [False]
 
 
+def test_a_kept_reservation_ends(server: MmsServer, model: IedModel) -> None:
+    resv_tms = f"{PROT}/LLN0$BR$brcbTrip01$ResvTms"
+    with MmsClient.connect("127.0.0.1", server.port) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, resv_tms=1, general_interrogation=False))
+    deadline = time.monotonic() + 3
+    while model.get(f"{PROT}/LLN0$BR$brcbTrip01$RptEna") == BoolData(True) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert model.get(resv_tms) == IntData(1)  # kept for the client that left
+    with MmsClient.connect("127.0.0.1", server.port) as other:
+        assert not rcb.read_status(other, BRCBS[0]).free
+        deadline = time.monotonic() + 3
+        while model.get(resv_tms) != IntData(0) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert model.get(resv_tms) == IntData(0)
+        assert rcb.find_free(other, BRCBS).rcb == BRCBS[0]  # free again for any client
+
+
 def test_disconnect_disables_the_block(server: MmsServer, model: IedModel) -> None:
     client = MmsClient.connect("127.0.0.1", server.port)
     rcb.enable(client, BRCBS[1], rcb.RcbSettings(intg_pd_ms=0, resv_tms=0, general_interrogation=False))
