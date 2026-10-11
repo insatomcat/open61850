@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import functools
 import heapq
 import ipaddress
 import itertools
@@ -294,7 +295,7 @@ class ReportEngine:
                 keep = resv_tms.value if isinstance(resv_tms, IntData) and resv_tms.value > 0 else 0
                 rcb.release(keep_seconds=keep if rcb.buffered else 0)
                 if rcb.reserved_until is not None:
-                    self._at(rcb.reserved_until, lambda rcb=rcb, due=rcb.reserved_until: self._lapse(rcb, due))
+                    self._at(rcb.reserved_until, functools.partial(self._lapse, rcb, rcb.reserved_until))
 
     def _lapse(self, rcb: ReportControl, due: float) -> None:
         """The reservation kept for a client that left ends: the block is free again, and says so (ResvTms 0)."""
