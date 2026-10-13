@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.9 (2026-10-13)
 
 - `operate` writes Cancel when an object it selected (SBO or SBOw) does
   not accept the Oper that follows, refused or unanswered. The selection
