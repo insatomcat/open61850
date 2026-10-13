@@ -11,6 +11,11 @@
 - direct-with-enhanced-security: Oper, then the CommandTermination;
 - sbo-with-enhanced-security: an SBOw write, then Oper, then the CommandTermination.
 
+When the object was selected and Oper is not accepted (refused, or no
+response), a Cancel releases the selection at once; it would otherwise stay
+held until the server's sboTimeout. Each command takes the next ctlNum of a counter
+shared by the process, unless the call gives its own.
+
 A refused command raises :class:`ControlError` with the LastApplError the
 server sent (its AddCause says why).
 
@@ -22,6 +27,7 @@ Example::
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from dataclasses import dataclass, field
@@ -74,6 +80,8 @@ __all__ = [
     "ctl_model_name",
     "read_ctl_model",
     "oper_value",
+    "cancel_value",
+    "next_ctl_num",
     "operate",
 ]
 
@@ -124,6 +132,15 @@ LAST_APPL_ERROR = ObjectName("LastApplError")
 _CONTROL_ATTRIBUTES = ("Oper", "SBOw", "SBO", "Cancel")
 
 CtlValue = Union[IECData, bool, int, float]
+
+_ctl_nums = itertools.count(1)
+_ctl_nums_lock = threading.Lock()
+
+
+def next_ctl_num() -> int:
+    """The next ctlNum of the process's counter, 1 to 255 then 0 again."""
+    with _ctl_nums_lock:
+        return next(_ctl_nums) & 0xFF
 
 
 @dataclass(frozen=True)
@@ -273,6 +290,22 @@ def oper_value(
     ])
 
 
+def cancel_value(
+    ctl_val: CtlValue,
+    *,
+    origin: Origin = Origin(),
+    ctl_num: int = 0,
+    test: bool = False,
+    t: Optional[datetime] = None,
+    time_quality: int = DEFAULT_TIME_QUALITY,
+    oper_tm: Optional[datetime] = None,
+) -> StructureData:
+    """The Cancel structure {ctlVal, [operTm], origin, ctlNum, T, Test}: Oper's without Check."""
+    oper = oper_value(ctl_val, origin=origin, ctl_num=ctl_num, test=test, t=t, time_quality=time_quality,
+                      oper_tm=oper_tm)
+    return StructureData(oper.members[:-1])
+
+
 @dataclass
 class _Watch:
     """InformationReports about one control object, collected on the receive thread."""
@@ -334,7 +367,7 @@ def operate(
     ctl_val: CtlValue,
     *,
     origin: Origin = Origin(),
-    ctl_num: int = 0,
+    ctl_num: Optional[int] = None,
     test: bool = False,
     interlock_check: bool = True,
     synchro_check: bool = True,
@@ -346,6 +379,7 @@ def operate(
     """Run one command on ``name`` (``X$CO$Pos``, ``X$CO$Pos$Oper`` or ``LD/X.Pos``).
 
     ``ctl_model`` is read from ``X$CF$Pos$ctlModel`` when not given;
+    ``ctl_num`` is :func:`next_ctl_num` when not given;
     ``oper_tm`` makes a time-activated command (an Oper with operTm). Raises
     :class:`ControlError` when the server refuses the command or reports a
     negative CommandTermination, or when no termination arrives in time.
@@ -355,6 +389,8 @@ def operate(
         ctl_model = read_ctl_model(client, obj)
     if ctl_model not in CTL_MODELS or ctl_model == CTL_MODEL_STATUS_ONLY:
         raise ControlError("check", f"{obj} cannot be operated (ctlModel {ctl_model})")
+    if ctl_num is None:
+        ctl_num = next_ctl_num()
 
     oper = _attribute(obj, "Oper")
     watch = _Watch(obj, oper)
@@ -377,7 +413,16 @@ def operate(
         elif ctl_model == CTL_MODEL_SBO_ENHANCED:
             _write(client, watch, "select", _attribute(obj, "SBOw"), value(), error_grace)
 
-        _write(client, watch, "operate", oper, value(), error_grace)
+        try:
+            _write(client, watch, "operate", oper, value(), error_grace)
+        except MmsError:
+            if ctl_model in (CTL_MODEL_SBO_NORMAL, CTL_MODEL_SBO_ENHANCED):
+                cancel = cancel_value(ctl_val, origin=origin, ctl_num=ctl_num, test=test, oper_tm=oper_tm)
+                try:
+                    client.write(_attribute(obj, "Cancel"), cancel)
+                except MmsError:
+                    pass  # the server refuses it, the association is gone: the selection lapses anyway
+            raise
 
         terminated = False
         if ctl_model in (CTL_MODEL_DIRECT_ENHANCED, CTL_MODEL_SBO_ENHANCED):

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `operate` writes Cancel when an object it selected (SBO or SBOw) does
+  not accept the Oper that follows, refused or unanswered. The selection
+  stayed held until the server's `sboTimeout` (30 s by default), and
+  every other command on the object, from any client, got
+  `object-already-selected` in the meantime.
+- `operate` gives each command the next ctlNum of a counter shared by the
+  process (`next_ctl_num`) when the call gives none. It sent 0 for every
+  command, so that a server's log and its LastApplError could not tell
+  one command from the next. `cancel_value` builds the Cancel structure.
+
 ## 0.9.8 (2026-10-11)
 
 - The MMS server ends the reservation it keeps for a buffered block's

@@ -192,6 +192,58 @@ def test_sbo_normal_needs_a_selection(serve: Callable[..., tuple[MmsClient, Fake
     assert [name for name, _ in ied.writes] == ["CBCSWI1$CO$Pos$Oper"]
 
 
+def _refuse_oper(server: FakeServer, _value: IECData) -> bytes:
+    server.send_mms(_report([control.LAST_APPL_ERROR], [_last_appl_error(10)]))
+    return bytes.fromhex("800103")  # object-access-denied
+
+
+def test_refused_oper_cancels_the_selection(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:  # noqa: F811
+    ied = ControlIed(control.CTL_MODEL_SBO_ENHANCED, _refuse_oper)
+    client, _ = serve(ied)
+    with pytest.raises(ControlError, match="blocked-by-interlocking") as info:
+        operate(client, POS, True, ctl_num=9)
+    assert info.value.stage == "operate"
+    assert [name for name, _ in ied.writes] == ["CBCSWI1$CO$Pos$SBOw", "CBCSWI1$CO$Pos$Oper", "CBCSWI1$CO$Pos$Cancel"]
+    oper, cancel = ied.writes[1][1], ied.writes[2][1]
+    assert cancel.members == oper.members[:2] + [UIntData(9), cancel.members[3], BoolData(False)]  # type: ignore[attr-defined]
+
+
+def test_sbo_normal_cancels_too(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:  # noqa: F811
+    ied = ControlIed(control.CTL_MODEL_SBO_NORMAL, _refuse_oper)
+    ied.values["CBCSWI1$CO$Pos$SBO"] = VisibleStringData(f"{LD}/CBCSWI1$CO$Pos")
+    client, _ = serve(ied)
+    with pytest.raises(ControlError):
+        operate(client, POS, True)
+    assert [name for name, _ in ied.writes] == ["CBCSWI1$CO$Pos$Oper", "CBCSWI1$CO$Pos$Cancel"]
+
+
+def test_no_cancel_without_a_selection(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:  # noqa: F811
+    ied = ControlIed(control.CTL_MODEL_DIRECT_ENHANCED, _refuse_oper)
+    client, _ = serve(ied)
+    with pytest.raises(ControlError):
+        operate(client, POS, True)
+    assert [name for name, _ in ied.writes] == ["CBCSWI1$CO$Pos$Oper"]
+    # a refused select, and an accepted Oper whose termination does not come, leave nothing to cancel
+    ied = ControlIed(control.CTL_MODEL_SBO_ENHANCED, lambda *_: None)
+    ied.refuse = frozenset({"SBOw"})
+    client, _ = serve(ied)
+    with pytest.raises(ControlError, match="select"):
+        operate(client, POS, True)
+    ied.refuse = frozenset()
+    with pytest.raises(ControlError, match="no CommandTermination"):
+        operate(client, POS, True, termination_timeout=0.2)
+    assert [name for name, _ in ied.writes] == ["CBCSWI1$CO$Pos$SBOw", "CBCSWI1$CO$Pos$Oper"]
+
+
+def test_each_command_takes_the_next_ctl_num(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:  # noqa: F811
+    ied = ControlIed(control.CTL_MODEL_SBO_ENHANCED, _terminate)
+    client, _ = serve(ied)
+    first, second = operate(client, POS, True).ctl_num, operate(client, POS, False).ctl_num
+    assert second == (first + 1) & 0xFF
+    sbow, oper = ied.writes[2][1], ied.writes[3][1]
+    assert sbow.members[2] == oper.members[2] == UIntData(second)  # type: ignore[attr-defined]
+
+
 def test_status_only_is_refused(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:  # noqa: F811
     client, _ = serve(ControlIed(control.CTL_MODEL_STATUS_ONLY))
     with pytest.raises(ControlError, match="cannot be operated"):
