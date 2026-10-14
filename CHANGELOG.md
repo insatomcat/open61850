@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.10 (2026-10-14)
 
 - The MMS server keeps a buffered block's entries encoded, made once when
   the entry is: one object per entry for the garbage collector, whatever
