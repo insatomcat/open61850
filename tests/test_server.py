@@ -153,6 +153,7 @@ def test_server_stop_closes_clients(model: IedModel) -> None:
 
 # --- reports -----------------------------------------------------------------------
 
+import gc  # noqa: E402
 import queue  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -270,6 +271,40 @@ def test_buffer_overflow_only_when_unsent_entries_are_dropped(model: IedModel, m
             assert [r.buf_ovfl for r in _reports(q, 0.2)] == [True] + [False] * 4
             model.set(TRIP, True)
             assert [r.buf_ovfl for r in _reports(q, 0.2)] == [False]
+
+
+def test_buffer_bounded_in_bytes(model: IedModel) -> None:
+    q: queue.Queue = queue.Queue()
+    with MmsServer(model, "127.0.0.1", 0, report_buffer_bytes=1) as server:  # room for the newest entry alone
+        server.start()
+        with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+            settings = rcb.RcbSettings(intg_pd_ms=0, purge_buf=True, resv_tms=2, general_interrogation=False)
+            rcb.enable(client, BRCBS[0], settings)
+            model.set(TRIP, True)
+            (live,) = _reports(q, 0.2)
+        deadline = time.monotonic() + 3
+        while model.get(f"{PROT}/LLN0$BR$brcbTrip01$RptEna") == BoolData(True) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        for i in range(4):
+            model.set(TRIP, i % 2 == 1)
+        with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+            settings = rcb.RcbSettings(intg_pd_ms=0, entry_id=live.entry_id, general_interrogation=False)
+            rcb.enable(client, BRCBS[0], settings)
+            (replay,) = _reports(q, 0.2)
+            assert replay.buf_ovfl and replay.entries[0].value == BoolData(True)  # the last change, three dropped
+
+
+def test_a_buffered_entry_is_one_object_for_the_collector(server: MmsServer, model: IedModel) -> None:
+    with MmsClient.connect("127.0.0.1", server.port) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, purge_buf=True))
+        for _ in range(20):  # general interrogations: every member, the measurement's structure among them
+            client.write(f"{PROT}/LLN0$BR$brcbTrip01$GI", BoolData(True))
+        model.set(TRIP, True)
+        assert server.reports is not None
+        buffer = list(server.reports.controls[(PROT, "LLN0$BR$brcbTrip01")].buffer)
+    assert len(buffer) == 22
+    gc.collect()  # tuples of numbers leave the collector's lists on its first pass
+    assert [x for entry in buffer for x in gc.get_referents(entry) if gc.is_tracked(x) and not isinstance(x, type)] == []
 
 
 def test_a_kept_reservation_ends(server: MmsServer, model: IedModel) -> None:

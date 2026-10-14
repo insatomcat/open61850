@@ -311,14 +311,14 @@ def conclude_response() -> bytes:
     return ber.encode_tlv(pdu.TAG_CONCLUDE_RESPONSE)
 
 
-def _access_results(results: list[Union[IECData, int]]) -> bytes:
+def access_results(results: list[Union[IECData, int]]) -> bytes:
     return b"".join(ber.encode_tlv(0x80, ber.encode_integer(r)) if isinstance(r, int) else encode_data(r) for r in results)
 
 
 def read_response(results: list[Union[IECData, int]], spec: Optional[bytes] = None) -> bytes:
     """Read-Response content; an int in ``results`` is a DataAccessError code."""
     head = ber.encode_tlv(0xA0, spec) if spec is not None else b""
-    return head + ber.encode_tlv(0xA1, _access_results(results))
+    return head + ber.encode_tlv(0xA1, access_results(results))
 
 
 def write_response(errors: list[Optional[int]]) -> bytes:
@@ -345,12 +345,15 @@ def get_named_variable_list_attributes_response(members: list[ObjectName]) -> by
 
 
 def information_report(values: list[Union[IECData, int]], *, list_name: Optional[str] = None,
-                       variables: Optional[list[ObjectName]] = None) -> bytes:
-    """An unconfirmed informationReport: on a named list (``RPT``) or on a list of variables."""
+                       variables: Optional[list[ObjectName]] = None, encoded: bytes = b"") -> bytes:
+    """An unconfirmed informationReport: on a named list (``RPT``) or on a list of variables.
+
+    ``encoded``: access results already encoded, after those of ``values``.
+    """
     if list_name is not None:
         spec = ber.encode_tlv(0xA1, ber.encode_tlv(0x80, list_name.encode("ascii")))
     else:
         spec = ber.encode_tlv(0xA0, b"".join(ber.encode_tlv(0x30, ber.encode_tlv(0xA0, encode_object_name(n)))
                                              for n in variables or []))
-    report = ber.encode_tlv(0xA0, spec + ber.encode_tlv(0xA0, _access_results(values)))
+    report = ber.encode_tlv(0xA0, spec + ber.encode_tlv(0xA0, access_results(values) + encoded))
     return ber.encode_tlv(pdu.TAG_UNCONFIRMED, report)

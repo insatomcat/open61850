@@ -19,6 +19,13 @@ report control blocks work:
   (EntryID, BufOvfl) that an enabling client receives from the entry after
   EntryID (all of it when EntryID is zero); BufOvfl is TRUE in the first
   report after the full buffer dropped an entry no client had been sent;
+- the buffer is bounded twice, the oldest entries dropped first: at most
+  :data:`BUFFER_ENTRIES` entries, and at most the server's
+  ``report_buffer_bytes`` of encoded values and reasons (:data:`BUFFER_BYTES`
+  unless it says), the newest entry always kept. An entry is encoded once,
+  when it is made: a few objects whatever the data set's size, so that a
+  server with many blocks does not hand the garbage collector millions of
+  values to walk;
 - when a client goes, its blocks are disabled; a BRCB stays reserved for
   ResvTms seconds, then ResvTms goes back to 0 and the block is free.
 
@@ -52,6 +59,7 @@ from ..data import (
     UIntData,
     VisibleStringData,
     encode_binary_time,
+    encode_data,
 )
 from ..mms.pdu import ObjectName
 from ..mms.report import OptFlds, ReasonCode, TrgOps, bitstring_of
@@ -66,18 +74,34 @@ from .model import (
     _fits,
 )
 
-__all__ = ["ReportEngine", "ReportControl", "BUFFER_ENTRIES"]
+__all__ = ["ReportEngine", "ReportControl", "BUFFER_ENTRIES", "BUFFER_BYTES"]
 
 BUFFER_ENTRIES = 1000  # entries a BRCB keeps
+BUFFER_BYTES = 256 * 1024  # encoded values and reasons a BRCB keeps, unless the server says
 _CONFIG = {"RptID", "DatSet", "ConfRev", "OptFlds", "BufTm", "TrgOps", "IntgPd"}
 
 
 @dataclass
+class _Gathered:
+    """The changes BufTm gathers, until they make an entry."""
+
+    reasons: dict[int, ReasonCode] = field(default_factory=dict)  # member index -> reason
+    values: dict[int, Union[IECData, int]] = field(default_factory=dict)  # an int: a DataAccessError code
+
+
+@dataclass(slots=True)
 class _Entry:
+    """An entry as it will be sent: its members' values and reasons encoded once, in the members' order."""
+
     entry_id: int
     time: datetime
-    reasons: dict[int, ReasonCode]  # member index -> reason
-    values: dict[int, Union[IECData, int]] = field(default_factory=dict)  # an int: a DataAccessError code
+    indexes: tuple[int, ...]  # the members included
+    values: bytes  # their access results
+    reasons: bytes  # their reason codes
+
+    @property
+    def size(self) -> int:
+        return len(self.values) + len(self.reasons)
 
 
 class ReportControl:
@@ -91,8 +115,10 @@ class ReportControl:
         self.owner: object = None  # the ServerConnection that reserved or enabled it
         self.owner_address: Optional[str] = None
         self.reserved_until: Optional[float] = None  # a BRCB kept after its client left
-        self.pending: Optional[_Entry] = None  # gathered for BufTm
-        self.buffer: collections.deque[_Entry] = collections.deque(maxlen=BUFFER_ENTRIES)
+        self.pending: Optional[_Gathered] = None  # gathered for BufTm
+        self.buffer: collections.deque[_Entry] = collections.deque()
+        self.buffer_bytes = 0  # the size of the buffer's entries
+        self.max_entries, self.max_bytes = BUFFER_ENTRIES, engine.buffer_bytes
         self.overflowed = False  # the buffer dropped an entry no client had been sent
         self.sent = 0  # EntryID of the last entry sent to a client
         self.next_entry = 1
@@ -133,6 +159,23 @@ class ReportControl:
     def _uint(self, name: str) -> int:
         value = self.attr(name)
         return value.value if isinstance(value, (UIntData, IntData)) else 0
+
+    # --- buffer ------------------------------------------------------------------
+
+    def keep(self, entry: _Entry) -> None:
+        """``entry`` buffered, the oldest dropped beyond the bounds; one never sent sets BufOvfl."""
+        self.buffer.append(entry)
+        self.buffer_bytes += entry.size
+        while len(self.buffer) > 1 and (len(self.buffer) > self.max_entries or self.buffer_bytes > self.max_bytes):
+            dropped = self.buffer.popleft()
+            self.buffer_bytes -= dropped.size
+            if dropped.entry_id > self.sent:
+                self.overflowed = True
+
+    def purge(self) -> None:
+        self.buffer.clear()
+        self.buffer_bytes = 0
+        self.overflowed = False
 
     # --- reservation -------------------------------------------------------------
 
@@ -181,6 +224,7 @@ class ReportEngine:
         assert isinstance(server, MmsServer)
         self.server = server
         self.model: IedModel = server.model
+        self.buffer_bytes: int = server.report_buffer_bytes
         self.controls: dict[tuple[str, str], ReportControl] = {}  # (domain, item) -> block
         for domain, lns in self.model.logical_devices.items():
             for ln in lns.values():
@@ -263,8 +307,7 @@ class ReportEngine:
                 return True
             if attribute == "PurgeBuf":
                 if isinstance(value, BoolData) and value.value:
-                    rcb.buffer.clear()
-                    rcb.overflowed = False
+                    rcb.purge()
                 return True
             if attribute == "GI":
                 if isinstance(value, BoolData) and value.value and rcb.enabled:
@@ -380,7 +423,7 @@ class ReportEngine:
         buf_tm = rcb._uint("BufTm")
         if buf_tm and rcb.enabled:
             if rcb.pending is None:
-                rcb.pending = _Entry(0, datetime.now(timezone.utc), {})
+                rcb.pending = _Gathered()
                 pending = rcb.pending
                 self._at(time.monotonic() + buf_tm / 1000, lambda: self._flush(rcb) if rcb.pending is pending else None)
             if any(i in rcb.pending.reasons for i in reasons):
@@ -401,17 +444,18 @@ class ReportEngine:
                    values: Optional[dict[int, Union[IECData, int]]] = None) -> _Entry:
         """An entry with ``values`` as they were at the change (read now when not given)."""
         members = rcb.members()
-        entry = _Entry(rcb.next_entry, datetime.now(timezone.utc), dict(sorted(reasons.items())))
+        indexes = tuple(sorted(reasons))
+        values = values or {}
+        entry = _Entry(rcb.next_entry, datetime.now(timezone.utc), indexes,
+                       protocol.access_results([values[i] if i in values else self.model.read(members[i])
+                                                for i in indexes]),
+                       b"".join(encode_data(reasons[i].to_bitstring()) for i in indexes))
         rcb.next_entry += 1
-        for index in entry.reasons:
-            entry.values[index] = values[index] if values and index in values else self.model.read(members[index])
         return entry
 
     def _deliver(self, rcb: ReportControl, entry: _Entry) -> None:
         if rcb.buffered:
-            if len(rcb.buffer) == rcb.buffer.maxlen and rcb.buffer[0].entry_id > rcb.sent:
-                rcb.overflowed = True
-            rcb.buffer.append(entry)
+            rcb.keep(entry)
             rcb.set_attr("EntryID", OctetStringData(entry.entry_id.to_bytes(8, "big")))
             rcb.set_attr("TimeOfEntry", RawData(0x8C, encode_binary_time(entry.time)))
         if rcb.enabled:
@@ -439,14 +483,11 @@ class ReportEngine:
             values.append(OctetStringData(entry.entry_id.to_bytes(8, "big")))
         if opt.conf_revision:
             values.append(UIntData(rcb._uint("ConfRev")))
-        included = [i in entry.reasons for i in range(len(members))]
-        values.append(bitstring_of(included))
-        indexes = [i for i in range(len(members)) if included[i]]
+        included = set(entry.indexes)
+        values.append(bitstring_of([i in included for i in range(len(members))]))
         if opt.data_reference:
-            values += [VisibleStringData(f"{members[i].domain}/{members[i].item}") for i in indexes]
-        values += [entry.values[i] for i in indexes]
-        if opt.reason_for_inclusion:
-            values += [entry.reasons[i].to_bitstring() for i in indexes]
+            values += [VisibleStringData(f"{members[i].domain}/{members[i].item}") for i in entry.indexes]
+        encoded = entry.values + entry.reasons if opt.reason_for_inclusion else entry.values
         size = rcb.node.child("SqNum")
         modulo = 256 if size is not None and getattr(size.mms_type, "size", 8) == 8 else 65536
         rcb.set_attr("SqNum", UIntData((sq_num + 1) % modulo))
@@ -454,7 +495,7 @@ class ReportEngine:
         rcb.sent = max(rcb.sent, entry.entry_id)
         connection = rcb.owner
         if connection is not None:
-            self.server.broadcast(protocol.information_report(values, list_name="RPT"), to=connection)  # type: ignore[arg-type]
+            self.server.broadcast(protocol.information_report(values, list_name="RPT", encoded=encoded), to=connection)  # type: ignore[arg-type]
 
 
 def _merge(a: Optional[ReasonCode], b: ReasonCode) -> ReasonCode:

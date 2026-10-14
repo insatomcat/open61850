@@ -37,7 +37,7 @@ from ..mms.transport import IsoConnection, TransportError
 from . import protocol
 from .control import ControlEngine
 from .model import IedModel
-from .reporting import ReportEngine
+from .reporting import BUFFER_BYTES, ReportEngine
 from .settings import SettingGroupEngine
 
 __all__ = ["MmsServer", "ServerConnection", "ERROR_DEFINITION", "ERROR_ACCESS"]
@@ -193,13 +193,18 @@ class ServerConnection:
 
 
 class MmsServer:
-    """Serves ``model`` on ``host``:``port`` (port 0 picks a free one; see :attr:`port`)."""
+    """Serves ``model`` on ``host``:``port`` (port 0 picks a free one; see :attr:`port`).
+
+    ``report_buffer_bytes`` bounds each BRCB's buffer, in encoded values and
+    reasons (:mod:`.reporting`).
+    """
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
                  max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True,
-                 setting_groups: bool = True) -> None:
+                 setting_groups: bool = True, report_buffer_bytes: int = BUFFER_BYTES) -> None:
         self.model = model
+        self.report_buffer_bytes = report_buffer_bytes
         self.host = host
         self.port = port
         self.vendor, self.model_name, self.revision = vendor, model_name, revision

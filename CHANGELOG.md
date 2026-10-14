@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server keeps a buffered block's entries encoded, made once when
+  the entry is: one object per entry for the garbage collector, whatever
+  the data set. An entry kept its values as decoded data, about twenty
+  objects each, so that a relay of 118 logical devices whose blocks two
+  clients had enabled held 18 million objects and 2 GB in its buffers,
+  and each full collection stopped every thread of the server for
+  seconds (5 s measured), long enough for a client's request to time
+  out. On that model, the process takes 270 MB instead of 2.1 GB, and a
+  full collection 70 ms instead of 850 ms on a developer's machine.
+- A block's buffer is also bounded in bytes of encoded values and
+  reasons: `MmsServer(report_buffer_bytes=...)`, 256 KiB by default
+  (`reporting.BUFFER_BYTES`), besides the 1000 entries. The oldest
+  entries go first, the newest always stays, and `BufOvfl` says when one
+  never sent was dropped.
+- `protocol.information_report` takes access results already encoded
+  (`encoded`), and `protocol.access_results` encodes them.
+
 ## 0.9.9 (2026-10-13)
 
 - `operate` writes Cancel when an object it selected (SBO or SBOw) does
