@@ -215,7 +215,7 @@ def test_the_viewer_reads_as_this_module(tmp_path, data_format: str, revision: s
         for path in (cfg, dat):
             archive.write(path, path.rsplit("/", 1)[-1])
     script = tmp_path / "read.js"
-    script.write_text(viewer_script() + _READ)
+    script.write_text(viewer_script() + _READ, encoding="utf-8")
     flat, zipped = json.loads(subprocess.run([_NODE, str(script), cfg, dat, str(tmp_path / "rec.zip")], check=True,
                                              capture_output=True, text=True).stdout)
     record = load_comtrade(cfg)
