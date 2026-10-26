@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.11 (2026-10-26)
 
 - `comtrade.viewer_script()`: a COMTRADE viewer for a browser page
   (`comtrade_viewer.js`, shipped in the package), which a server puts in
