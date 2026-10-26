@@ -379,7 +379,12 @@ const ComtradeViewer = (() => {
       choose(chosen);
       viewer.draw();
     };
-    viewer.clear = () => { viewer.rec = null; $(".cv-plots").innerHTML = ""; $(".cv-readout").innerHTML = ""; };
+    viewer.clear = () => {
+      viewer.rec = null;
+      const plots = $(".cv-plots");
+      plots.innerHTML = ""; delete plots.dataset.layout;  // the next record makes its canvases again
+      for (const sel of [".cv-readout", ".cv-rx-plot", ".cv-loops"]) $(sel).innerHTML = "";
+    };
 
     // the panels: currents, voltages, other analog channels of the stream shown, then the digital channels
     function panels() {
