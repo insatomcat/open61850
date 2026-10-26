@@ -182,7 +182,10 @@ const ComtradeViewer = (() => {
       <div class="cv-body"><div class="cv-plots"></div><div class="cv-side"><table class="cv-readout"></table></div></div>`;
     const $ = sel => host.querySelector(sel);
     if (options.side) $(".cv-side").appendChild(options.side);
-    const LEFT = 84, RIGHT = 8;  // the plots' margins, for the pointer as for the drawing
+    const RIGHT = 8;  // the plots' right margin; the left one holds the digital channels' names, 84 to 260 px
+    let LEFT = 84;
+    // a digital channel's name as drawn: a GOOSE member's without the LLN0$GO$ that every one has
+    const label = id => id.replace("/LLN0$GO$", "/");
     const viewer = {rec: null, name: "", stream: "", zoom: {from: 0, to: 0, cursor: null, held: false}, channels: [], iIdx: [], vIdx: [], hasLoops: false};
     const zoom = viewer.zoom;
     let drag = null;
@@ -252,6 +255,9 @@ const ComtradeViewer = (() => {
       const ink = css("--ink-2", "--ink", "#1c2430"), grid = css("--grid", "#e9ecf1"), muted = css("--muted", "--mute", "#687385");
       const critical = css("--critical", "--bad", "#c62828"), series = css("--series", "--accent", "#2457c5");
       const width = plots.clientWidth || 800, dpr = window.devicePixelRatio || 1;
+      const measure = document.createElement("canvas").getContext("2d");
+      measure.font = "10px system-ui, sans-serif";
+      LEFT = Math.round(Math.min(260, Math.max(84, 12 + Math.max(0, ...dig.map(k => measure.measureText(label(rec.digital[k].id)).width)))));
       const plotW = Math.max(50, width - LEFT - RIGHT);
       const x = t => LEFT + (t - zoom.from) / (zoom.to - zoom.from) * plotW;
       const specs = groups.map(g => ({...g, height: 150})).concat(dig.length ? [{title: "Digital", digital: dig, height: 16 * dig.length + 22}] : []);
@@ -264,7 +270,6 @@ const ComtradeViewer = (() => {
       const i0 = Math.max(0, viewer.indexAt(zoom.from) - 1), i1 = Math.min(rec.count - 1, viewer.indexAt(zoom.to) + 1);
       const tStep = niceStep(zoom.to - zoom.from, plotW / 90);
       const cursor = zoom.cursor === null ? null : Math.min(Math.max(zoom.cursor, 0), rec.count - 1);
-      const digitalWidth = Math.max(14, Math.floor((LEFT - 8) / 6));  // characters of a digital channel's name
       specs.forEach((s, i) => {
         const canvas = plots.querySelectorAll("canvas")[i], title = plots.querySelectorAll(".cv-title")[i];
         canvas.width = Math.round(width * dpr); canvas.height = Math.round(s.height * dpr); canvas.style.height = `${s.height}px`;
@@ -284,8 +289,9 @@ const ComtradeViewer = (() => {
           title.innerHTML = `<b>Digital</b><span class="cv-hint">${dig.length} of ${rec.digital.length} channels${$(".cv-all").checked ? "" : " (those that are on or change)"}</span>`;
           s.digital.forEach((k, row) => {
             const y = top + row * 16, id = rec.digital[k].id;
-            // a long name (a GOOSE's gocbRef and member) keeps its end, where it differs
-            g.fillStyle = ink; g.textAlign = "right"; g.fillText(id.length > digitalWidth ? "…" + id.slice(-digitalWidth + 1) : id, LEFT - 4, y + 11);
+            let name = label(id);  // too long still: its end, where GOOSE members differ
+            while (name.length > 2 && g.measureText(name).width > LEFT - 8) name = "…" + name.slice(2);
+            g.fillStyle = ink; g.textAlign = "right"; g.fillText(name, LEFT - 4, y + 11);
             g.fillStyle = /^Tr|\.Op$|TRIP/.test(id) ? critical : series;
             let startAt = null;
             for (let n = i0; n <= i1 + 1; n++) {
