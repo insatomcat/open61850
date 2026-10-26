@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.12 (2026-10-26)
 
 - The COMTRADE viewer draws the six impedance loops on an R-X diagram,
   as a distance protection computes them, under the readout: on the
