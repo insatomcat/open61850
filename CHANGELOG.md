@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- The COMTRADE viewer draws the six impedance loops on an R-X diagram,
+  as a distance protection computes them, under the readout: on the
+  settings the page gives (`show(..., {settings})`, `settings()`,
+  `settingsFor(stream)`; `lineSettings(r1, x1, r0, x0)` for a line's
+  k0 and Z1), a relay's zones included. It was open61850-protection's
+  own, beside the viewer. Without zones, the diagram is framed on the
+  line.
+- The channels are named without their stream's name, which the
+  selector says; the digital channels drawn by default are those that
+  change (a position on all along was a line of its own); the readout's
+  digital channels wrap instead of widening the side panel; the grid
+  falls back on the page's `--line`, the loops on colours of their own.
+
 ## 0.9.11 (2026-10-26)
 
 - `comtrade.viewer_script()`: a COMTRADE viewer for a browser page
