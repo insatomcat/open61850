@@ -6,10 +6,10 @@
 // panel each, the digital channels that are on or change under them, on a time axis from the trigger; a drag
 // zooms in, a double click or Whole record shows it whole, a click holds the cursor (the arrow keys then move it by
 // a sample, shift by a cycle), and at the cursor each channel's value, its RMS and its angle over the cycle ending
-// there. A file of several streams (each analog channel's ccbm field, as a merging unit's svID) shows one at a
-// time, the one with the largest current first. With the three phase currents and voltages, the six impedance loops
-// on an R-X diagram, as a distance protection computes them, on the settings the page gives (k0, the line, the
-// zones; none: k0 = 0). The page gives it a box:
+// there, the digital channels on there named in colour. A file of several streams (each analog channel's ccbm
+// field, as a merging unit's svID) shows one at a time, the one with the largest current first. With the three
+// phase currents and voltages, the six impedance loops on an R-X diagram, as a distance protection computes them,
+// on the settings the page gives (k0, the line, the zones; none: k0 = 0). The page gives it a box:
 //
 //     const viewer = ComtradeViewer.create(document.getElementById("box"));
 //     viewer.show(ComtradeViewer.parse(cfgText, datArrayBuffer), {name: "shot-12"});
@@ -247,7 +247,6 @@ const ComtradeViewer = (() => {
 .cv-swatch { display:inline-block; width:10px; height:3px; margin-right:4px; vertical-align:middle; border-radius:1px; }
 .cv-chip { display:inline-block; padding:0 6px; margin:1px 2px; border-radius:8px; font-size:11px; border:1px solid currentColor; }
 .cv-chip.on { color:var(--series, var(--accent, #2457c5)); } .cv-chip.trip { color:var(--critical, var(--bad, #c62828)); }
-.cv-chip.off { color:var(--muted, var(--mute, #687385)); opacity:0.45; }
 .cv-side table { width:100%; border-collapse:collapse; } .cv-side td.cv-chips { white-space:normal; }
 .cv-side caption { text-align:left; padding-bottom:2px; }
 .cv-rx-head { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; margin-top:12px; }
@@ -273,8 +272,7 @@ const ComtradeViewer = (() => {
         <label><input type="checkbox" class="cv-all"> Every digital channel</label>
         <button type="button" class="cv-reset ${esc(options.buttonClass || "")}">Whole record</button>
         <span class="cv-hint"${options.hint === false ? " hidden" : ""}>Hover to read the values, click to hold the cursor (the arrow keys move it by a sample, shift by a cycle), drag to zoom in, double click for the whole record.</span></div>
-      <dl class="cv-info"></dl>
-      <div class="cv-body"><div class="cv-plots"></div><div class="cv-side"><table class="cv-readout"></table>
+      <div class="cv-body"><div><dl class="cv-info"></dl><div class="cv-plots"></div></div><div class="cv-side"><table class="cv-readout"></table>
         <div class="cv-rx"><div class="cv-rx-head"><h3>Impedances</h3>
           <label>Zones <select class="cv-zones"><option value="direction">cut by the direction</option><option value="closed">closed below the R axis</option></select></label></div>
           <div class="cv-rx-plot"></div><table class="cv-loops"></table></div></div></div>`;
@@ -441,8 +439,11 @@ const ComtradeViewer = (() => {
             const y = top + row * 16, id = rec.digital[k].id;
             let name = label(id);  // too long still: its end, where GOOSE members differ
             while (name.length > 2 && g.measureText(name).width > LEFT - 8) name = "…" + name.slice(2);
-            g.fillStyle = ink; g.textAlign = "right"; g.fillText(name, LEFT - 4, y + 11);
-            g.fillStyle = /^Tr|\.Op$|TRIP/.test(id) ? critical : series;
+            const color = /^Tr|\.Op$|TRIP/.test(id) ? critical : series;
+            // at the cursor, the name of a channel on in its bar's colour, the others muted
+            g.fillStyle = cursor === null ? ink : rec.bits[k][cursor] ? color : muted;
+            g.textAlign = "right"; g.fillText(name, LEFT - 4, y + 11);
+            g.fillStyle = color;
             let startAt = null;
             for (let n = i0; n <= i1 + 1; n++) {
               const on = n <= i1 && rec.bits[k][n];
@@ -518,7 +519,7 @@ const ComtradeViewer = (() => {
     };
 
     // beside the curves, the side holds in its scrolling box's height (less the sticky margins): the R-X diagram
-    // gives up what the rest needs, down to 200 px, so that the side does not scroll on its own
+    // gives up what the rest needs, down to 300 px, so that the side does not scroll on its own
     function fit() {
       const side = $(".cv-side"), svg = $(".cv-rx-plot svg");
       side.style.maxHeight = "";
@@ -530,14 +531,14 @@ const ComtradeViewer = (() => {
       side.style.maxHeight = `${room}px`;
       const over = side.scrollHeight - room;
       if (svg && over > 0) {
-        const size = Math.max(200, svg.getBoundingClientRect().height - over);
+        const size = Math.max(300, svg.getBoundingClientRect().height - over);
         svg.style.width = svg.style.height = `${size}px`;
       }
     }
 
     // at the cursor: each channel of the stream, its value, its RMS and its angle from the first voltage (else
-    // current), over the cycle ending there; the digital channels that are on
-    // with or without a cursor, the table keeps its rows and the chips their places: the impedances under it stay put
+    // current), over the cycle ending there
+    // with or without a cursor, the table keeps its rows: the impedances under it stay put
     function readout(n) {
       const rec = viewer.rec, table = $(".cv-readout");
       const refK = viewer.channels.find(k => kindOf(rec.analog[k]) === "V") ?? viewer.channels.find(k => kindOf(rec.analog[k]) === "A");
@@ -550,13 +551,9 @@ const ComtradeViewer = (() => {
         return `<tr><td><span class="cv-swatch" style="background:${colorOf(c)}"></span>${esc(short(c))}</td><td class="num">${n === null ? "-" : nf(v, 1)} ${esc(c.unit)}</td>`
           + `<td class="num">${p ? nf(p.mag, 1) : "-"} ${esc(c.unit)}</td><td class="num">${ang === undefined ? "-" : nf(ang, 1) + "°"}</td></tr>`;
       });
-      // every digital channel on at some time, dimmed where off; one on all along (a position) with Every digital channel only
-      const all = $(".cv-all").checked;
-      const on = rec.digital.map((c, k) => k).filter(k => rec.bits[k].some(b => b) && (all || rec.bits[k].some(b => !b)))
-        .map(k => `<span class="cv-chip ${n === null || !rec.bits[k][n] ? "off" : /^Tr|\.Op$|TRIP/.test(rec.digital[k].id) ? "trip" : "on"}" title="${esc(rec.digital[k].id)}">${esc(label(rec.digital[k].id))}</span>`);
       table.innerHTML = `<caption>${n === null ? "Move over the curves to read the values." : `At ${esc(fmtMs(rec.time[n]))} from the trigger (sample ${nf(n)})`}</caption>`
         + `<tr><th>Channel</th><th class="num">Value</th><th class="num">RMS</th><th class="num">Angle</th></tr>`
-        + rows.join("") + `<tr><td colspan="4" class="cv-chips">${on.join(" ") || '<span class="cv-hint">no digital channel on</span>'}</td></tr>`;
+        + rows.join("");
     }
 
     // the R-X diagram: the zones and the line, each loop's trajectory over the zoomed window where its current is
