@@ -560,6 +560,7 @@ const ComtradeViewer = (() => {
     // enough, its point at the cursor; under it each loop's impedance, current and zones there
     function drawRx(n) {
       const rec = viewer.rec, box = $(".cv-rx-plot"), table = $(".cv-loops"), s = viewer.rx;
+      $(".cv-zones").parentElement.hidden = !s.zones.length;  // their drawing's choice, without zones nothing to choose
       if (!viewer.hasLoops) {
         box.innerHTML = "";
         table.innerHTML = `<tr><td class="cv-hint">The loops need the stream's three phase currents and voltages.</td></tr>`;
