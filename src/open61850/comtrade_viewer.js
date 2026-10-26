@@ -170,13 +170,14 @@ const ComtradeViewer = (() => {
   // A viewer in ``host``. Options: ``side``, an element put under the readout (a relay's impedances); ``onStream``,
   // called with the viewer once a record or another of its streams is shown; ``onDraw``, with the viewer and the
   // cursor's sample (or null) after each drawing; ``active``, whether the keys and the window's size are the
-  // viewer's now (by default, while its box is shown).
+  // viewer's now (by default, while its box is shown); ``buttonClass``, the page's class for its buttons; ``hint``
+  // false leaves out the line that says how to use it, which the page says itself.
   function create(host, options = {}) {
     style();
     host.innerHTML = `<div class="cv-bar"><label class="cv-stream" hidden>Stream <select></select></label>
         <label><input type="checkbox" class="cv-all"> Every digital channel</label>
-        <button type="button" class="cv-reset">Whole record</button>
-        <span class="cv-hint">Hover to read the values, click to hold the cursor (the arrow keys move it by a sample, shift by a cycle), drag to zoom in, double click for the whole record.</span></div>
+        <button type="button" class="cv-reset ${esc(options.buttonClass || "")}">Whole record</button>
+        <span class="cv-hint"${options.hint === false ? " hidden" : ""}>Hover to read the values, click to hold the cursor (the arrow keys move it by a sample, shift by a cycle), drag to zoom in, double click for the whole record.</span></div>
       <dl class="cv-info"></dl>
       <div class="cv-body"><div class="cv-plots"></div><div class="cv-side"><table class="cv-readout"></table></div></div>`;
     const $ = sel => host.querySelector(sel);
