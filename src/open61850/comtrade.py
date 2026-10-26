@@ -15,7 +15,8 @@ fault record becomes Sampled Values (:meth:`open61850.sv_publisher.Playback.from
     print(record.analog_channels[0].ch_id, record.analog(0)[:5])
 
 :func:`save_comtrade` writes a :class:`Comtrade` back, in revision 1999 or
-2013 (a disturbance recorder's output).
+2013 (a disturbance recorder's output). :func:`viewer_script` is the same
+reading in a browser, with a viewer that draws a record in a page.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ __all__ = [
     "parse_cfg",
     "resample",
     "save_comtrade",
+    "viewer_script",
 ]
 
 
@@ -407,3 +409,11 @@ def resample(times: list[float], values: list[float], rate: int) -> list[float]:
         weight = 0.0 if t_b == t_a else (t - t_a) / (t_b - t_a)
         out.append(clean[j] + (clean[j + 1] - clean[j]) * weight)
     return out
+
+
+def viewer_script() -> str:
+    """The COMTRADE viewer for a browser page, a script of its own (``comtrade_viewer.js``, beside this module): it
+    defines ``ComtradeViewer``, whose ``parse`` reads a .cfg and its .dat as this module does, ``fromZip`` a record's
+    zip, and ``create`` draws one in a box of the page. A server puts it in its page, inside a ``<script>`` element,
+    so that the page stays one file."""
+    return (Path(__file__).parent / "comtrade_viewer.js").read_text(encoding="utf-8")

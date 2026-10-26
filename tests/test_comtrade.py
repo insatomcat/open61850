@@ -12,8 +12,12 @@ rounding), digital states, times and trigger time.
 
 from __future__ import annotations
 
+import json
 import math
+import shutil
 import struct
+import subprocess
+import zipfile
 from datetime import datetime
 
 import pytest
@@ -27,6 +31,7 @@ from open61850.comtrade import (
     parse_cfg,
     resample,
     save_comtrade,
+    viewer_script,
 )
 from open61850.sv_publisher import Playback
 
@@ -182,3 +187,47 @@ def test_save_many_digital_channels(tmp_path) -> None:
     back = load_comtrade(tmp_path / "rec.cfg")
     assert back.raw_digital == record.raw_digital and back.timestamps == [None] * N
     assert back.times()[1] == pytest.approx(0.001)
+
+
+_NODE = shutil.which("node")
+_READ = """
+const fs = require("fs");
+const [cfg, dat, zip] = process.argv.slice(2);
+const read = path => { const b = fs.readFileSync(path); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); };
+const out = r => ({count: r.count, time: [...r.time], values: r.values.map(v => [...v].map(x => Number.isNaN(x) ? null : x)),
+                   bits: r.bits.map(b => [...b]), ids: r.analog.map(c => c.id), ccbm: r.analog.map(c => c.ccbm)});
+(async () => {
+  const flat = ComtradeViewer.parse(fs.readFileSync(cfg, "latin1"), read(dat));
+  console.log(JSON.stringify([out(flat), out(await ComtradeViewer.fromZip(read(zip)))]));
+})();
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+@pytest.mark.parametrize(("data_format", "revision"), [("ASCII", "1999"), ("BINARY", "1991"), ("BINARY32", "2013"),
+                                                       ("FLOAT32", "1999")])
+def test_the_viewer_reads_as_this_module(tmp_path, data_format: str, revision: str) -> None:
+    """The page's viewer, run by node, reads a record as load_comtrade does: each analog value (a x + b, a missing
+    one missing), each digital state, each time from the trigger; from its files and from a zip of them."""
+    cfg = _write(tmp_path, data_format, revision=revision)
+    dat = cfg.removesuffix(".cfg") + ".dat"
+    with zipfile.ZipFile(tmp_path / "rec.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in (cfg, dat):
+            archive.write(path, path.rsplit("/", 1)[-1])
+    script = tmp_path / "read.js"
+    script.write_text(viewer_script() + _READ)
+    flat, zipped = json.loads(subprocess.run([_NODE, str(script), cfg, dat, str(tmp_path / "rec.zip")], check=True,
+                                             capture_output=True, text=True).stdout)
+    record = load_comtrade(cfg)
+    assert flat == zipped and flat["count"] == N and flat["ids"] == ["IA", "VA"] and flat["ccbm"] == ["", ""]
+    for k, channel in enumerate(record.analog_channels):
+        expected = [None if v is None or math.isnan(v) else channel.a * v + channel.b for v in record.raw_analog[k]]
+        assert flat["values"][k] == pytest.approx(expected, rel=1e-6, nan_ok=True)
+    assert flat["bits"] == record.raw_digital
+    trigger = (record.trigger - record.start).total_seconds()
+    assert flat["time"] == pytest.approx([t - trigger for t in record.times()], abs=1e-9)
+
+
+def test_the_viewer_is_shipped() -> None:
+    script = viewer_script()
+    assert script.startswith("// Copyright") and "const ComtradeViewer" in script and "\u2014" not in script

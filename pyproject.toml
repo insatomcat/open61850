@@ -45,7 +45,7 @@ open61850-server = "open61850.server.__main__:main"
 version = { attr = "open61850.__version__" }
 
 [tool.setuptools.package-data]
-open61850 = ["py.typed"]
+open61850 = ["py.typed", "comtrade_viewer.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

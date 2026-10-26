@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `comtrade.viewer_script()`: a COMTRADE viewer for a browser page
+  (`comtrade_viewer.js`, shipped in the package), which a server puts in
+  its page. It reads a record as `load_comtrade` does (the four formats,
+  the three revisions; a test runs it in node and compares), from its
+  files or a zip of them, and draws it: the currents, the voltages and
+  the other analog channels, the digital channels that are on or
+  change, a cursor with each channel's value, RMS and angle over the
+  cycle, a zoom. A file of several streams (each channel's ccbm, a
+  merging unit's svID) shows one at a time. It was open61850-protection's
+  records analyser; simu-scope uses it too.
+
 ## 0.9.10 (2026-10-14)
 
 - The MMS server keeps a buffered block's entries encoded, made once when
