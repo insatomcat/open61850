@@ -247,6 +247,7 @@ const ComtradeViewer = (() => {
 .cv-swatch { display:inline-block; width:10px; height:3px; margin-right:4px; vertical-align:middle; border-radius:1px; }
 .cv-chip { display:inline-block; padding:0 6px; margin:1px 2px; border-radius:8px; font-size:11px; border:1px solid currentColor; }
 .cv-chip.on { color:var(--series, var(--accent, #2457c5)); } .cv-chip.trip { color:var(--critical, var(--bad, #c62828)); }
+.cv-chip.off { color:var(--muted, var(--mute, #687385)); opacity:0.45; }
 .cv-side table { width:100%; border-collapse:collapse; } .cv-side td.cv-chips { white-space:normal; }
 .cv-side caption { text-align:left; padding-bottom:2px; }
 .cv-rx-head { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; margin-top:12px; }
@@ -513,27 +514,47 @@ const ComtradeViewer = (() => {
       readout(cursor);
       drawRx(cursor);
       if (options.onDraw) options.onDraw(viewer, cursor);
+      fit();
     };
+
+    // beside the curves, the side holds in its scrolling box's height (less the sticky margins): the R-X diagram
+    // gives up what the rest needs, down to 200 px, so that the side does not scroll on its own
+    function fit() {
+      const side = $(".cv-side"), svg = $(".cv-rx-plot svg");
+      side.style.maxHeight = "";
+      if (svg) svg.style.width = svg.style.height = "";
+      if (getComputedStyle(side).position !== "sticky") return;
+      let box = side.parentElement;
+      while (box && !/(auto|scroll|overlay)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+      const room = (box ? box.clientHeight : window.innerHeight) - 16;
+      side.style.maxHeight = `${room}px`;
+      const over = side.scrollHeight - room;
+      if (svg && over > 0) {
+        const size = Math.max(200, svg.getBoundingClientRect().height - over);
+        svg.style.width = svg.style.height = `${size}px`;
+      }
+    }
 
     // at the cursor: each channel of the stream, its value, its RMS and its angle from the first voltage (else
     // current), over the cycle ending there; the digital channels that are on
+    // with or without a cursor, the table keeps its rows and the chips their places: the impedances under it stay put
     function readout(n) {
       const rec = viewer.rec, table = $(".cv-readout");
-      if (n === null) { table.innerHTML = `<tr><td class="cv-hint">Move over the curves to read the values.</td></tr>`; return; }
       const refK = viewer.channels.find(k => kindOf(rec.analog[k]) === "V") ?? viewer.channels.find(k => kindOf(rec.analog[k]) === "A");
       const at = k => { const p = viewer.phasor(k, n); return Number.isNaN(p.re) ? null : {mag: Math.hypot(p.re, p.im), ang: Math.atan2(p.im, p.re)}; };
-      const ref = refK === undefined ? null : at(refK);
+      const ref = refK === undefined || n === null ? null : at(refK);
       const rows = viewer.channels.map(k => {
-        const c = rec.analog[k], p = at(k), v = rec.values[k][n];
+        const c = rec.analog[k], p = n === null ? null : at(k), v = n === null ? NaN : rec.values[k][n];
         let ang = p && ref && p.mag > 1e-9 ? (p.ang - ref.ang) * 180 / Math.PI : undefined;
         if (ang !== undefined) ang = ((ang + 540) % 360) - 180;
-        return `<tr><td><span class="cv-swatch" style="background:${colorOf(c)}"></span>${esc(short(c))}</td><td class="num">${nf(v, 1)} ${esc(c.unit)}</td>`
+        return `<tr><td><span class="cv-swatch" style="background:${colorOf(c)}"></span>${esc(short(c))}</td><td class="num">${n === null ? "-" : nf(v, 1)} ${esc(c.unit)}</td>`
           + `<td class="num">${p ? nf(p.mag, 1) : "-"} ${esc(c.unit)}</td><td class="num">${ang === undefined ? "-" : nf(ang, 1) + "°"}</td></tr>`;
       });
-      const all = $(".cv-all").checked;  // a channel on all along (a position) said with Every digital channel only
-      const on = rec.digital.map((c, k) => k).filter(k => rec.bits[k][n] && (all || rec.bits[k].some(b => !b)))
-        .map(k => `<span class="cv-chip ${/^Tr|\.Op$|TRIP/.test(rec.digital[k].id) ? "trip" : "on"}" title="${esc(rec.digital[k].id)}">${esc(label(rec.digital[k].id))}</span>`);
-      table.innerHTML = `<caption>At ${esc(fmtMs(rec.time[n]))} from the trigger (sample ${nf(n)})</caption>`
+      // every digital channel on at some time, dimmed where off; one on all along (a position) with Every digital channel only
+      const all = $(".cv-all").checked;
+      const on = rec.digital.map((c, k) => k).filter(k => rec.bits[k].some(b => b) && (all || rec.bits[k].some(b => !b)))
+        .map(k => `<span class="cv-chip ${n === null || !rec.bits[k][n] ? "off" : /^Tr|\.Op$|TRIP/.test(rec.digital[k].id) ? "trip" : "on"}" title="${esc(rec.digital[k].id)}">${esc(label(rec.digital[k].id))}</span>`);
+      table.innerHTML = `<caption>${n === null ? "Move over the curves to read the values." : `At ${esc(fmtMs(rec.time[n]))} from the trigger (sample ${nf(n)})`}</caption>`
         + `<tr><th>Channel</th><th class="num">Value</th><th class="num">RMS</th><th class="num">Angle</th></tr>`
         + rows.join("") + `<tr><td colspan="4" class="cv-chips">${on.join(" ") || '<span class="cv-hint">no digital channel on</span>'}</td></tr>`;
     }
