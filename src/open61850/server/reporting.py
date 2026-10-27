@@ -135,6 +135,8 @@ class ReportControl:
         child = self.node.child(name) or (self.node.child("TimeofEntry") if name == "TimeOfEntry" else None)
         if child is not None:
             child.assign(value)
+            if name == "DatSet":
+                self.engine._index = None
 
     @property
     def enabled(self) -> bool:
@@ -232,6 +234,9 @@ class ReportEngine:
                     fc_node = ln.child(fc)
                     for block in (fc_node.children.values() if fc_node is not None else ()):
                         self.controls[(domain, block.item)] = ReportControl(self, domain, block)
+        # each data set member's blocks and places in their data sets, by (domain, item): what a change reaches
+        self._index: Optional[dict[tuple[str, str], list[tuple[ReportControl, int]]]] = None
+        self._roots: dict[int, tuple[Node, str]] = {}  # a logical node's domain, by the node's id
         self._lock = threading.RLock()
         self._timers: list[tuple[float, int, Callable[[], None]]] = []
         self._counter = itertools.count()
@@ -325,6 +330,8 @@ class ReportEngine:
                     rcb.integrity_due = None
                 return True
             node.assign(value)  # configuration, EntryID
+            if attribute == "DatSet":
+                self._index = None
             return True
 
     def _on_close(self, connection: object) -> None:
@@ -386,17 +393,23 @@ class ReportEngine:
     # --- changes ------------------------------------------------------------------------
 
     def _on_change(self, changed: list[Node]) -> None:
+        """The blocks a change reaches, each with the reasons of its members: a leaf is looked up by itself and each
+        object above it, so that the cost is that of the leaves changed, whatever the number of blocks."""
         with self._lock, self.model.lock:
-            for rcb in self.controls.values():
-                if not rcb.enabled and not (rcb.buffered and rcb.ever_enabled):
+            index = self._members()
+            found: dict[ReportControl, dict[int, ReasonCode]] = {}
+            live: dict[ReportControl, Optional[TrgOps]] = {}  # each block reached: its TrgOps, None when it reports nothing
+            for leaf in changed:
+                if not leaf.triggers:
                     continue
-                trg = rcb.trg_ops()
-                members = rcb.members()
-                reasons: dict[int, ReasonCode] = {}
-                for leaf in changed:
-                    domain = self._domain_of(leaf)
-                    for index, member in enumerate(members):
-                        if member.domain != domain or not (leaf.item == member.item or leaf.item.startswith(member.item + "$")):
+                domain = self._domain_of(leaf)
+                parts = leaf.item.split("$")
+                for n in range(len(parts), 0, -1):
+                    for rcb, place in index.get((domain, "$".join(parts[:n])), ()):
+                        if rcb not in live:
+                            live[rcb] = rcb.trg_ops() if rcb.enabled or (rcb.buffered and rcb.ever_enabled) else None
+                        trg = live[rcb]
+                        if trg is None:
                             continue
                         reason = ReasonCode(
                             data_change="dchg" in leaf.triggers and trg.data_change,
@@ -404,16 +417,32 @@ class ReportEngine:
                             data_update="dupd" in leaf.triggers and trg.data_update,
                         )
                         if reason != ReasonCode():
-                            reasons[index] = _merge(reasons.get(index), reason)
-                if reasons:
-                    self._add(rcb, reasons)
+                            reasons = found.setdefault(rcb, {})
+                            reasons[place] = _merge(reasons.get(place), reason)
+            for rcb in self.controls.values():  # in the blocks' order, as before
+                if rcb in found:
+                    self._add(rcb, found[rcb])
+
+    def _members(self) -> dict[tuple[str, str], list[tuple[ReportControl, int]]]:
+        """Each data set member's blocks, made again once a client writes a DatSet."""
+        if self._index is None:
+            index: dict[tuple[str, str], list[tuple[ReportControl, int]]] = {}
+            for rcb in self.controls.values():
+                for place, member in enumerate(rcb.members()):
+                    index.setdefault((member.domain or "", member.item), []).append((rcb, place))
+            self._index = index
+        return self._index
 
     def _domain_of(self, leaf: Node) -> str:
         root = leaf
         while root.parent is not None:
             root = root.parent
+        known = self._roots.get(id(root))
+        if known is not None and known[0] is root:
+            return known[1]
         for domain, lns in self.model.logical_devices.items():
             if lns.get(root.name) is root:
+                self._roots[id(root)] = (root, domain)
                 return domain
         return ""
 

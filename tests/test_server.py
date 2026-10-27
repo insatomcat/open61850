@@ -540,3 +540,45 @@ def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:
                     assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == OFF
                     time.sleep(0.35)
                     assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == ON
+
+
+def test_a_data_set_written_on_a_block_is_the_one_reported(server: MmsServer, model: IedModel) -> None:
+    """The members a change reaches are looked up by name, made once: a DatSet a client writes makes them again."""
+    q: queue.Queue = queue.Queue()
+    dat_set = f"{PROT}/LLN0$BR$brcbTrip01$DatSet"
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, general_interrogation=False))
+        model.set(TRIP, True)
+        assert len(_reports(q, 0.2)) == 1
+        rcb.disable(client, BRCBS[0])
+        client.write(dat_set, VisibleStringData(""))  # no data set: nothing to report
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, general_interrogation=False))
+        model.set(TRIP, False)
+        assert _reports(q, 0.2) == []
+        rcb.disable(client, BRCBS[0])
+        client.write(dat_set, VisibleStringData(f"{PROT}/LLN0$DS_TRIP"))
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, general_interrogation=False))
+        model.set(TRIP, True)
+        (report,) = _reports(q, 0.2)
+        assert [(e.index, e.value) for e in report.entries] == [(0, BoolData(True))]
+
+
+def test_a_change_does_not_go_through_every_block(server: MmsServer, model: IedModel,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """A change is looked up in the data sets' members by name: the blocks' data sets are read once, whatever the
+    number of changes. Read again for each change and each block, as before, a relay of 14 bays fed measurements
+    that move at each computation (a network computed in time) held the model until no read was answered."""
+    from open61850.server import reporting
+
+    reads, added = [], []
+    members = reporting.ReportControl.members
+    monkeypatch.setattr(reporting.ReportControl, "members", lambda self: reads.append(self) or members(self))
+    with MmsClient.connect("127.0.0.1", server.port) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, general_interrogation=False))
+        monkeypatch.setattr(server.reports, "_add", lambda block, reasons: added.append((block, reasons)))
+        reads.clear()
+        for i in range(20):
+            model.set(TRIP, i % 2 == 0)
+            model.set("IED01MU/IMMXU1.A.phsA.q[MX]", i)  # in no data set
+        assert [(block.node.name, list(reasons)) for block, reasons in added] == [("brcbTrip01", [0])] * 20
+        assert len(reads) <= len(server.reports.controls)  # the index, made once

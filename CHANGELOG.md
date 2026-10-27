@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A change of the model reaches the report control blocks through an
+  index of their data sets' members, made once and again when a client
+  writes a DatSet: its cost is that of the attributes changed. Each change
+  went through every block and each block's members, finding each
+  attribute's logical device among them all, under the model's lock: on a
+  relay of 14 bays (1748 blocks) whose measurements moved at each
+  computation, the server took a core and answered no read.
+
 ## 0.9.12 (2026-10-26)
 
 - The COMTRADE viewer draws the six impedance loops on an R-X diagram,
