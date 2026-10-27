@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server sends through a queue and a writer thread per
+  connection. A client that stopped reading held its reports' sends,
+  which ran under the model's lock: the model, the other clients'
+  reports and every request waited behind it. Such a client is now
+  dropped once a PDU has waited `send_timeout` seconds (10 by default)
+  or its queue passes `send_queue_bytes` (16 MiB), and its blocks are
+  released.
+- Accepted connections use TCP keepalive and TCP_USER_TIMEOUT
+  (`keepalive`, 20 s by default, None for the system's defaults): a
+  client that vanished without closing (host down, cable, a Scada
+  restarted elsewhere) is dropped within about that time instead of
+  holding its association and its reserved report blocks for good, or
+  for the 15 minutes of TCP retransmissions when reports flowed.
+
 ## 0.9.13 (2026-10-27)
 
 - A change of the model reaches the report control blocks through an

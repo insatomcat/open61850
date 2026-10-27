@@ -18,13 +18,25 @@ GetNamedVariableListAttributes, Conclude. Anything else gets a Reject.
 Reports, controls and setting groups work through engines attached by
 :meth:`MmsServer.start` (:attr:`MmsServer.reports`, :attr:`~MmsServer.controls`,
 :attr:`~MmsServer.setting_groups`, the last when the model has an SGCB).
+
+What a connection sends goes through its own queue and writer thread, so
+that a client which stops reading never holds up the model, the reports of
+other clients or the requests: it is dropped once a PDU has waited
+``send_timeout`` seconds to go out or its queue passes ``send_queue_bytes``. A
+peer that vanished without closing (host down, cable) is noticed by TCP
+keepalive and TCP_USER_TIMEOUT within about ``keepalive`` seconds, and its
+reservations are released like those of a client that closed.
 """
 
 from __future__ import annotations
 
 import bisect
+import collections
 import socket
+import struct
+import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Optional, Union
 
@@ -60,6 +72,10 @@ class ServerConnection:
         self.mms_context = pdu.MMS_PRESENTATION_CONTEXT
         self.pdu_size = server.max_pdu_size
         self.closed = threading.Event()
+        self._queue: collections.deque[tuple[float, bytes]] = collections.deque()  # (queued at, data)
+        self._queued = 0  # bytes
+        self._sending: Optional[float] = None  # when the PDU being sent was queued
+        self._ready = threading.Condition()
         # Run once the response to the current request has gone (a CommandTermination follows its write).
         self.after_response: list[Callable[[], None]] = []
 
@@ -68,11 +84,43 @@ class ServerConnection:
         return str(self.peer[0]) if self.peer else ""
 
     def send(self, mms_pdu: bytes) -> None:
-        self.iso.send(pdu.wrap(mms_pdu, self.mms_context))
+        """Queue a PDU for the writer thread; never waits for the peer."""
+        data = pdu.wrap(mms_pdu, self.mms_context)
+        now = time.monotonic()
+        with self._ready:
+            if self.closed.is_set():
+                return
+            oldest = self._sending if self._sending is not None else self._queue[0][0] if self._queue else now
+            behind = now - oldest > self.server.send_timeout or self._queued + len(data) > self.server.send_queue_bytes
+            if not behind:
+                self._queue.append((now, data))
+                self._queued += len(data)
+                self._ready.notify()
+        if behind:
+            self.close()
 
     def close(self) -> None:
         self.closed.set()
+        with self._ready:
+            self._queue.clear()
+            self._queued = 0
+            self._ready.notify()
         self.iso.close()
+
+    def _write_loop(self) -> None:
+        try:
+            while True:
+                with self._ready:
+                    while not self._queue and not self.closed.is_set():
+                        self._ready.wait()
+                    if self.closed.is_set():
+                        return
+                    self._sending, data = self._queue.popleft()
+                    self._queued -= len(data)
+                self.iso.send(data)
+                self._sending = None
+        except OSError:  # send timeout, reset
+            self.close()
 
     # --- serving ---------------------------------------------------------------
 
@@ -85,6 +133,7 @@ class ServerConnection:
             )
             self.mms_context = request.mms_context
             self.iso.send(accept)
+            threading.Thread(target=self._write_loop, name=f"mms-{self.address}-tx", daemon=True).start()
             while not self.closed.is_set():
                 user_data = self.iso.recv()
                 if user_data is None:
@@ -94,8 +143,7 @@ class ServerConnection:
         except (TransportError, MmsProtocolError, OSError):
             pass
         finally:
-            self.closed.set()
-            self.iso.close()
+            self.close()
             self.server._forget(self)
 
     def _recv_or_raise(self) -> bytes:
@@ -196,15 +244,19 @@ class MmsServer:
     """Serves ``model`` on ``host``:``port`` (port 0 picks a free one; see :attr:`port`).
 
     ``report_buffer_bytes`` bounds each BRCB's buffer, in encoded values and
-    reasons (:mod:`.reporting`).
+    reasons (:mod:`.reporting`). ``send_timeout``, ``send_queue_bytes`` and
+    ``keepalive`` (seconds, None for the system's TCP defaults) drop clients
+    that stop reading or vanish (module notes).
     """
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
                  max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True,
-                 setting_groups: bool = True, report_buffer_bytes: int = BUFFER_BYTES) -> None:
+                 setting_groups: bool = True, report_buffer_bytes: int = BUFFER_BYTES, send_timeout: float = 10.0,
+                 send_queue_bytes: int = 16 << 20, keepalive: Optional[float] = 20.0) -> None:
         self.model = model
         self.report_buffer_bytes = report_buffer_bytes
+        self.send_timeout, self.send_queue_bytes, self.keepalive = send_timeout, send_queue_bytes, keepalive
         self.host = host
         self.port = port
         self.vendor, self.model_name, self.revision = vendor, model_name, revision
@@ -268,6 +320,7 @@ class MmsServer:
     def _serve(self, client: socket.socket, peer: tuple) -> None:
         try:
             client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._watch(client)
             iso = protocol.accept_cotp(client)
         except (TransportError, OSError):
             client.close()
@@ -276,6 +329,26 @@ class MmsServer:
         with self._lock:
             self.connections.append(connection)
         connection.serve()
+
+    def _watch(self, client: socket.socket) -> None:
+        """Bound blocking sends and notice a peer that went away without closing."""
+        # SO_SNDTIMEO keeps the socket blocking for recv() and makes a send() without progress fail;
+        # one that trickles is caught by the age of the PDU it carries (ServerConnection.send).
+        if sys.platform == "win32":  # a DWORD of milliseconds
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, max(1, int(self.send_timeout * 1000)))
+        else:  # a struct timeval
+            seconds = int(self.send_timeout)
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+                              struct.pack("ll", seconds, int((self.send_timeout - seconds) * 1e6)))
+        if self.keepalive is None:
+            return
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        # Probes after keepalive/2 of silence, 5 of them keepalive/10 apart.
+        for option, value in (("TCP_KEEPIDLE", self.keepalive / 2), ("TCP_KEEPALIVE", self.keepalive / 2),
+                              ("TCP_KEEPINTVL", self.keepalive / 10), ("TCP_KEEPCNT", 5),
+                              ("TCP_USER_TIMEOUT", self.keepalive * 1000)):  # unacknowledged data, in ms
+            if hasattr(socket, option):
+                client.setsockopt(socket.IPPROTO_TCP, getattr(socket, option), max(1, int(value)))
 
     def _forget(self, connection: ServerConnection) -> None:
         with self._lock:

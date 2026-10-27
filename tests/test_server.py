@@ -155,6 +155,7 @@ def test_server_stop_closes_clients(model: IedModel) -> None:
 
 import gc  # noqa: E402
 import queue  # noqa: E402
+import socket  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 
@@ -582,3 +583,59 @@ def test_a_change_does_not_go_through_every_block(server: MmsServer, model: IedM
             model.set("IED01MU/IMMXU1.A.phsA.q[MX]", i)  # in no data set
         assert [(block.node.name, list(reasons)) for block, reasons in added] == [("brcbTrip01", [0])] * 20
         assert len(reads) <= len(server.reports.controls)  # the index, made once
+
+
+def test_a_client_that_stops_reading_is_dropped_without_stopping_the_server(model: IedModel) -> None:
+    # The report callback never returns, so the client stops reading: its socket fills up.
+    stuck = threading.Event()
+    with MmsServer(model, "127.0.0.1", 0, send_timeout=0.5) as server:
+        server.start()
+        client = MmsClient.connect("127.0.0.1", server.port, on_information_report=lambda _: stuck.wait())
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, resv_tms=0, general_interrogation=False))
+        (connection,) = server.connections
+        connection.iso._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        client._conn._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        done = threading.Event()
+
+        def changes() -> None:
+            for i in range(20000):
+                model.set(TRIP, i % 2 == 0)
+            done.set()
+
+        threading.Thread(target=changes, daemon=True).start()
+        assert done.wait(10), "model changes blocked behind a client that does not read"
+        deadline = time.monotonic() + 5
+        while server.connections and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not server.connections and connection.closed.is_set()
+        with MmsClient.connect("127.0.0.1", server.port) as other:
+            assert other.read(TRIP) in (BoolData(True), BoolData(False))
+        stuck.set()
+        client.close()
+
+
+def test_a_client_too_far_behind_is_dropped(model: IedModel) -> None:
+    stuck = threading.Event()
+    with MmsServer(model, "127.0.0.1", 0, send_queue_bytes=64 * 1024) as server:
+        server.start()
+        client = MmsClient.connect("127.0.0.1", server.port, on_information_report=lambda _: stuck.wait())
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, resv_tms=0, general_interrogation=False))
+        (connection,) = server.connections
+        connection.iso._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        client._conn._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        for i in range(20000):
+            model.set(TRIP, i % 2 == 0)
+            if connection.closed.is_set():
+                break
+        assert connection.closed.is_set()
+        stuck.set()
+        client.close()
+
+
+def test_accepted_sockets_notice_a_vanished_peer(server: MmsServer) -> None:
+    with MmsClient.connect("127.0.0.1", server.port):
+        (connection,) = server.connections
+        sock = connection.iso._sock
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
+        if hasattr(socket, "TCP_USER_TIMEOUT"):
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT) == int(server.keepalive * 1000)
