@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.14 (2026-10-27)
 
 - The MMS server sends through a queue and a writer thread per
   connection. A client that stopped reading held its reports' sends,
