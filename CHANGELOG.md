@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.13 (2026-10-27)
 
 - A change of the model reaches the report control blocks through an
   index of their data sets' members, made once and again when a client
@@ -9,6 +9,11 @@
   attribute's logical device among them all, under the model's lock: on a
   relay of 14 bays (1748 blocks) whose measurements moved at each
   computation, the server took a core and answered no read.
+- The COMTRADE viewer's side starts at the top beside the record's
+  description and stays still as the cursor moves: the digital channels
+  are named in the digital panel, the R-X diagram shrinks to hold in its
+  box; clear() makes the canvases again; the zones choice is hidden
+  when there is no zone.
 
 ## 0.9.12 (2026-10-26)
 
