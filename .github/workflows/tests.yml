@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install pytest
+      - run: python -m pip install pytest==9.2.0
       - run: python -m pytest
       # AF_PACKET on lo needs CAP_NET_RAW
       - run: sudo "$(which python)" -m pytest tests/test_capture.py tests/test_sv_publisher.py
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - run: python -m pip install pytest
+      - run: python -m pip install pytest==9.2.0
       - run: python -m pytest
       - run: python -m pip install . && open61850-supervise --help
 
@@ -97,6 +97,6 @@ jobs:
         with:
           tool: cbindgen@0.29.4
       - run: native/capi/tests/run.sh
-      - run: python -m pip install pytest ./native
+      - run: python -m pip install pytest==9.2.0 ./native
       - run: python -m pytest tests/test_sv_native.py tests/test_sv_decode_native.py tests/test_goose_encode_native.py tests/test_goose_decode_native.py
       - run: sudo "$(which python)" -m pytest -s tests/test_sv_native.py

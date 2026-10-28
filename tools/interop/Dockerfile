@@ -31,4 +31,4 @@ FROM python:3.13-slim
 COPY --from=build /out /usr/local/bin/
 COPY --from=build /scl /usr/local/share/libiec61850/
 COPY --from=build /l/build/src/libiec61850.so* /usr/local/lib/
-RUN ldconfig && pip install -q pytest
+RUN ldconfig && pip install -q pytest==9.2.0
