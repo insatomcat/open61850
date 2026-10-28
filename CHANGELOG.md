@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.15 (2026-10-28)
 
 - The COMTRADE viewer's R-X diagram takes in a fault's loops past the
   line's reach: the view holds the zones and the line, and the loops
