@@ -139,12 +139,31 @@ const ComtradeViewer = (() => {
     }
     return (r.phasors[k] = {re, im});
   }
+  // Where an arrow from the view's centre towards (x, y), in pixels of a W square, meets its edge (4 px in), and its
+  // angle in degrees, for a point out of the view
+  function edgeArrow(x, y, W) {
+    const c = W / 2, dx = x - c, dy = y - c, half = c - 4;
+    const t = Math.min(dx ? half / Math.abs(dx) : Infinity, dy ? half / Math.abs(dy) : Infinity);
+    return [c + t * dx, c + t * dy, Math.atan2(dy, dx) * 180 / Math.PI];
+  }
   function niceStep(span, target) {
     const raw = span / Math.max(1, target), p = Math.pow(10, Math.floor(Math.log10(raw)));
     return [1, 2, 5, 10].map(m => m * p).find(s => s >= raw) || 10 * p;
   }
 
   // --- impedances: the six loops as a distance protection computes them, on the settings the page gives ---------
+  // The R-X view, square: around the zones' and the line's points (base), and the loops' (loops) within FRAMED times
+  // the farthest of those from the origin: a resistive fault's past the line's reach in, a load's, farther out, left
+  // out; a quarter wider than what it holds. Its left R, its top X, its side and its centre.
+  const FRAMED = 3;
+  function rxFrame(base, loops) {
+    const far = Math.max(1, ...base.map(([r, x]) => Math.max(Math.abs(r), Math.abs(x))));
+    const all = base.concat(loops.filter(([r, x]) => Math.abs(r) <= FRAMED * far && Math.abs(x) <= FRAMED * far));
+    const r0 = Math.min(...all.map(p => p[0])), r1 = Math.max(...all.map(p => p[0]));
+    const x0 = Math.min(...all.map(p => p[1])), x1 = Math.max(...all.map(p => p[1]));
+    const span = Math.max(r1 - r0, x1 - x0, 1) * 1.25, rc = (r0 + r1) / 2, xc = (x0 + x1) / 2;
+    return {r0: rc - span / 2, x1: xc + span / 2, span, rc, xc};
+  }
   const cx = (re, im = 0) => ({re, im});
   const cadd = (a, b) => cx(a.re + b.re, a.im + b.im), csub = (a, b) => cx(a.re - b.re, a.im - b.im);
   const cmul = (a, b) => cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
@@ -582,10 +601,21 @@ const ComtradeViewer = (() => {
         const L = viewer.loops[name];
         if (n !== null && L.i[n] > Math.max(s.minCurrent, 1) && Math.abs(L.x[n]) < 1e4) all.push([L.r[n], L.x[n]]);
       }
-      let r0 = Math.min(...all.map(p => p[0])), r1 = Math.max(...all.map(p => p[0])), x0 = Math.min(...all.map(p => p[1])), x1 = Math.max(...all.map(p => p[1]));
-      const span = Math.max(r1 - r0, x1 - x0, 1) * 1.25, rc = (r0 + r1) / 2, xc = (x0 + x1) / 2;
-      r0 = rc - span / 2; x1 = xc + span / 2;
+      // the loops shown over the window where their current is enough and they held a cycle (within 5 %): a fault's
+      // settled points in the view too; the sweeps of the cycles a fault begins or ends in may leave it
+      const i0 = viewer.indexAt(zoom.from), i1 = viewer.indexAt(zoom.to), every = Math.max(1, Math.floor((i1 - i0) / 1500));
+      const cycle = Math.round(rec.rate / rec.frequency), seen = [];
+      for (const name of LOOP_NAMES) {
+        if (!shownLoops.has(name)) continue;
+        const L = viewer.loops[name];
+        for (let k = Math.max(i0, cycle); k <= i1; k += every)
+          if (L.i[k] > Math.max(s.minCurrent, 1) && L.i[k - cycle] > Math.max(s.minCurrent, 1) && Number.isFinite(L.r[k])
+              && Math.hypot(L.r[k] - L.r[k - cycle], L.x[k] - L.x[k - cycle]) <= 0.05 * Math.hypot(L.r[k], L.x[k]))
+            seen.push([L.r[k], L.x[k]]);
+      }
+      const {r0, x1, span, rc, xc} = rxFrame(all, seen);
       const W = 340, px = r => (r - r0) / span * W, py = x => (x1 - x) / span * W;
+      const inView = (r, x) => r >= r0 && r <= r0 + span && x <= x1 && x >= x1 - span;
       const grid = "var(--grid, var(--line, #e9ecf1))", muted = "var(--muted, var(--mute, #687385))", axis = "var(--axis, var(--line, #c9cfd9))";
       let svg = `<svg viewBox="0 0 ${W} ${W}" height="${W}" role="img" aria-label="R-X diagram"><defs><clipPath id="cv-rx-clip"><rect width="${W}" height="${W}"/></clipPath></defs>`;
       const step = niceStep(span, 6);
@@ -608,7 +638,6 @@ const ComtradeViewer = (() => {
         svg += `<text x="${px(corner[0]) + 3}" y="${py(corner[1]) + 10}">${esc(zs.name)}</text>`;
       }
       if (s.line) svg += `<line x1="${px(0)}" y1="${py(0)}" x2="${px(s.line.re)}" y2="${py(s.line.im)}" stroke="var(--ink-2, var(--ink, #1c2430))" stroke-dasharray="5 3"><title>the line</title></line>`;
-      const i0 = viewer.indexAt(zoom.from), i1 = viewer.indexAt(zoom.to), every = Math.max(1, Math.floor((i1 - i0) / 1500));
       svg += `<g clip-path="url(#cv-rx-clip)">`;
       const areas = new Set();
       for (const zs of s.zones) {
@@ -629,7 +658,14 @@ const ComtradeViewer = (() => {
         }
         const dash = name.endsWith("G") ? "" : ` stroke-dasharray="4 3"`;
         if (d) svg += `<path d="${d}" fill="none" stroke="${LOOP_COLOR[name]}" stroke-width="1.2" opacity="0.8"${dash}/>`;
-        if (n !== null && L.i[n] >= s.minCurrent && Number.isFinite(L.r[n]))
+        if (n !== null && L.i[n] >= s.minCurrent && Number.isFinite(L.r[n]) && !inView(L.r[n], L.x[n])) {
+          // out of the view (a load's, or a fault's farther than the view takes): an arrow on its edge towards it
+          const [ax, ay, angle] = edgeArrow(px(L.r[n]), py(L.x[n]), W);
+          svg += `<g transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${angle.toFixed(1)})"><path d="M0,0 L-9,-5 L-9,5 Z" fill="${LOOP_COLOR[name]}"/></g>`
+            + `<text class="cv-loop" x="${(ax + (ax > W / 2 ? -12 : 12)).toFixed(1)}" y="${(ay + (ay > W / 2 ? -6 : 14)).toFixed(1)}"`
+            + `${ax > W / 2 ? ' text-anchor="end"' : ""}>${name} ${nf(L.r[n], 1)}, ${nf(L.x[n], 1)}</text>`;
+        }
+        else if (n !== null && L.i[n] >= s.minCurrent && Number.isFinite(L.r[n]))
           svg += `<circle cx="${px(L.r[n])}" cy="${py(L.x[n])}" r="4" fill="${LOOP_COLOR[name]}" stroke="var(--surface, var(--card, #fff))"/>`
             + `<text class="cv-loop" x="${px(L.r[n]) + 6}" y="${py(L.x[n]) - 4}">${name}</text>`;
       }
@@ -731,5 +767,5 @@ const ComtradeViewer = (() => {
     return record;
   }
 
-  return {parse, fromZip, create, phaseOf, colorOf, lineSettings, NO_SETTINGS};
+  return {parse, fromZip, create, phaseOf, colorOf, lineSettings, NO_SETTINGS, rxFrame, edgeArrow};
 })();

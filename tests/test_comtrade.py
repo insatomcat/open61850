@@ -231,3 +231,26 @@ def test_the_viewer_reads_as_this_module(tmp_path, data_format: str, revision: s
 def test_the_viewer_is_shipped() -> None:
     script = viewer_script()
     assert script.startswith("// Copyright") and "const ComtradeViewer" in script and "\u2014" not in script
+
+
+_FRAME = """
+const line = [1.888, 4.803], reach = 2.5 * Math.hypot(...line);
+const base = [[0, 0], line, [-reach * 0.6, -reach * 0.6], [reach, reach]];
+const frame = loops => { const f = ComtradeViewer.rxFrame(base, loops); return [f.r0, f.r0 + f.span, f.x1 - f.span, f.x1]; };
+console.log(JSON.stringify({line: frame([]), fault: frame([[25.75, 1.92]]), load: frame([[92, 30]]),
+                            arrow: ComtradeViewer.edgeArrow(900, 170, 340), up: ComtradeViewer.edgeArrow(170, -50, 340)}));
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_the_rx_view_takes_a_fault_in_and_leaves_a_load_out(tmp_path) -> None:
+    """The R-X view holds the line and its reach, and a fault's loop past it (a three phase fault through 25 ohms on
+    a line of 5.16 ohms, on its own feeder without a relay's zones: it was drawn out of the view); a load's, farther,
+    is left out, and an arrow on the view's edge points to a loop out of it."""
+    script = tmp_path / "frame.js"
+    script.write_text(viewer_script() + _FRAME, encoding="utf-8")
+    seen = json.loads(subprocess.run([_NODE, str(script)], check=True, capture_output=True, text=True).stdout)
+    r0, r1, x0, x1 = seen["fault"]
+    assert r0 < 0 and r1 > 25.75 and x0 < 1.92 < x1
+    assert seen["load"] == seen["line"] and seen["line"][1] < 25.75
+    assert seen["arrow"] == [336, 170, 0] and seen["up"] == [170, 4, -90]

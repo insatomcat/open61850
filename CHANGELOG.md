@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The COMTRADE viewer's R-X diagram takes in a fault's loops past the
+  line's reach: the view holds the zones and the line, and the loops
+  that held a cycle within three times as far (a load's, farther, stays
+  out). A three phase fault through 25 ohms on a feeder without zones
+  was drawn out of the view, with nothing to say so. A loop out of the
+  view at the cursor has an arrow on the view's edge, its R and X beside.
+
 ## 0.9.14 (2026-10-27)
 
 - The MMS server sends through a queue and a writer thread per
