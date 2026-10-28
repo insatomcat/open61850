@@ -222,7 +222,10 @@ def test_the_viewer_reads_as_this_module(tmp_path, data_format: str, revision: s
     assert flat == zipped and flat["count"] == N and flat["ids"] == ["IA", "VA"] and flat["ccbm"] == ["", ""]
     for k, channel in enumerate(record.analog_channels):
         expected = [None if v is None or math.isnan(v) else channel.a * v + channel.b for v in record.raw_analog[k]]
-        assert flat["values"][k] == pytest.approx(expected, rel=1e-6, nan_ok=True)
+        # pytest 9.2 refuses None in approx with rel: missing values are compared by position, the others approx.
+        assert [i for i, v in enumerate(flat["values"][k]) if v is None] == [i for i, v in enumerate(expected) if v is None]
+        assert [v for v in flat["values"][k] if v is not None] == pytest.approx([v for v in expected if v is not None],
+                                                                                 rel=1e-6)
     assert flat["bits"] == record.raw_digital
     trigger = (record.trigger - record.start).total_seconds()
     assert flat["time"] == pytest.approx([t - trigger for t in record.times()], abs=1e-9)
