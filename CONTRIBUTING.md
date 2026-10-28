@@ -17,6 +17,10 @@ Tests that need Linux and root (AF_PACKET capture and publication) skip themselv
 
 `tools/interop/run.sh` runs the interoperability tests against libiec61850's example servers, publishers and subscriber in Docker. CI runs everything above on every push.
 
+## Releasing
+
+`tools/release [VERSION]` cuts a version from main: the changelog's `## Unreleased` section becomes the version's, every file that carries the version takes it (Python, the open61850-rt pin, the Cargo workspace and lock files, the C API's README), the tests run, and the commit `Version X.Y.Z` and its tag `vX.Y.Z` are pushed. The tag starts `.github/workflows/release.yml`: open61850 and open61850-rt to PyPI, then the GitHub release with libopen61850. `--no-push` keeps them local, `--help` says the rest.
+
 ## Rules of the house
 
 - Golden bytes in the tests come from real devices or from other implementations. When they change, the wire format changed: check it against a capture first.

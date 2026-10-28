@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Copyright 2026 Florent Carli
+# SPDX-License-Identifier: Apache-2.0
+#
+# Release what main holds since the last version:
+#
+#   tools/release [--no-check] [--no-push] [-m TEXT] [VERSION]
+#
+# VERSION is X.Y.Z (a leading v is dropped) and must come after the latest
+# version of the changelog. The changelog's "## Unreleased" becomes
+# "## X.Y.Z (YYYY-MM-DD)", and every place that carries the version takes
+# X.Y.Z: open61850.__version__, the open61850-rt pin of pyproject.toml's rt
+# extra, native/Cargo.toml's workspace version and the open61850 crates of
+# native/Cargo.lock and native/fuzz/Cargo.lock, and the archive's URL in
+# native/capi/README.md. They are committed as "Version X.Y.Z" on main,
+# signed off, its body -m's text when given, and tagged vX.Y.Z; main then the
+# tag are pushed to origin (--no-push keeps them local). The tag starts
+# .github/workflows/release.yml: open61850 and open61850-rt to PyPI, then the
+# GitHub release with the changelog's section and libopen61850 for x86_64
+# and aarch64.
+#
+# Before anything changes: main checked out, no change to tracked files, no
+# tag vX.Y.Z, __version__ the changelog's latest version, an Unreleased
+# section with text, and the tests passing (--no-check skips them): pytest
+# with .venv's Python when there is one ($PYTHON otherwise, python3 by
+# default), then ruff and mypy when that Python has them, and the Rust
+# core's tests when cargo is on the PATH. Each file is checked to have taken
+# the version; when one has not, every file is put back and nothing is
+# committed.
+#
+# Without VERSION, the release is the next bugfix of the changelog's latest
+# version (0.9.15 after 0.9.14).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+check=1
+push=1
+message=
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-check) check=0 ;;
+        --no-push) push=0 ;;
+        -m) [[ $# -ge 2 ]] || { echo "-m needs a text" >&2; exit 2; }; message=$2; shift ;;
+        -h|--help) sed -n '5,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) echo "unknown option $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+    shift
+done
+[[ $# -le 1 ]] || { echo "usage: $0 [--no-check] [--no-push] [-m TEXT] [VERSION]" >&2; exit 2; }
+
+changelog=CHANGELOG.md
+init=src/open61850/__init__.py
+files=("$changelog" "$init" pyproject.toml native/Cargo.toml native/Cargo.lock native/fuzz/Cargo.lock native/capi/README.md)
+die() { echo "release: $*" >&2; exit 1; }
+
+# The latest version of the changelog ("## 0.9.14 (2026-10-27)"); without VERSION, the next bugfix of it.
+last=$(sed -n 's/^## \([0-9][0-9.]*\)\( (.*)\)\{0,1\}$/\1/p' "$changelog" | sort -V | tail -1)
+[[ -n $last ]] || die "$changelog has no version"
+version=${1:-${last%.*}.$(( ${last##*.} + 1 ))}
+version=${version#v}
+tag=v$version
+
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$version is no X.Y.Z version"
+[[ $(git symbolic-ref --short HEAD) == main ]] || die "not on main"
+[[ -z $(git status --porcelain --untracked-files=no) ]] || die "tracked files have changes"
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "$tag exists"
+[[ $(printf '%s\n%s\n' "$last" "$version" | sort -V | tail -1) == "$version" && $last != "$version" ]] \
+    || die "$version does not come after $last"
+current=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$init")
+[[ $current == "$last" ]] || die "$init says $current, $changelog's latest version is $last"
+grep -qx '## Unreleased' "$changelog" || die "$changelog has no '## Unreleased' heading"
+awk '/^## / { on = ($0 == "## Unreleased"); next } on && NF { found = 1 } END { exit !found }' "$changelog" \
+    || die "the Unreleased section of $changelog is empty"
+if [[ $push == 1 ]]; then
+    git remote get-url origin >/dev/null 2>&1 || die "no origin to push to (--no-push keeps the release local)"
+fi
+
+echo "Releasing $version, after $last"
+
+if [[ $check == 1 ]]; then
+    python=${PYTHON:-python3}
+    [[ ! -x .venv/bin/python ]] || python=.venv/bin/python
+    echo "Running the tests ($python)"
+    "$python" -m pytest -q
+    if "$python" -m ruff --version >/dev/null 2>&1; then "$python" -m ruff check src tests tools examples; else echo "ruff: not installed, skipped"; fi
+    if "$python" -m mypy --version >/dev/null 2>&1; then "$python" -m mypy; else echo "mypy: not installed, skipped"; fi
+    if command -v cargo >/dev/null; then cargo test -q --manifest-path native/Cargo.toml -p open61850-core
+    else echo "cargo: not on the PATH, the Rust core's tests skipped"; fi
+fi
+
+# From here files change: put them back unless the commit is made.
+committed=0
+restore() { [[ $committed == 1 ]] || git checkout -q -- "${files[@]}"; }
+trap restore EXIT
+
+today=$(date +%Y-%m-%d)
+perl -pi -e "s/^## Unreleased\$/## $version ($today)/" "$changelog"
+perl -pi -e "s/^__version__ = \"\Q$last\E\"\$/__version__ = \"$version\"/" "$init"
+perl -pi -e "s/\"open61850-rt==\Q$last\E;/\"open61850-rt==$version;/" pyproject.toml
+perl -0pi -e "s/(\[workspace\.package\]\nversion = )\"\Q$last\E\"/\$1\"$version\"/" native/Cargo.toml
+perl -0pi -e "s/(name = \"open61850-(?:c|core|rt)\"\nversion = )\"\Q$last\E\"/\$1\"$version\"/g" native/Cargo.lock native/fuzz/Cargo.lock
+perl -pi -e "s/\Q$last\E/$version/g" native/capi/README.md
+
+# Each file took the version: as many places as there are, the old one gone from them.
+took() { [[ $(grep -c -- "$2" "$1") -ge $3 ]] || die "$1 did not take $version ($2)"; }
+took "$changelog" "^## $version ($today)\$" 1
+took "$init" "^__version__ = \"$version\"\$" 1
+took pyproject.toml "\"open61850-rt==$version;" 1
+took native/Cargo.toml "^version = \"$version\"\$" 1
+took native/Cargo.lock "^version = \"$version\"\$" 3
+took native/fuzz/Cargo.lock "^version = \"$version\"\$" 1
+took native/capi/README.md "$version" 3
+! grep -q -- "$last" native/capi/README.md || die "native/capi/README.md still says $last"
+
+body="open61850-rt and libopen61850 follow the version."
+[[ -z $message ]] || body="$message
+
+$body"
+git add -- "${files[@]}"
+git commit -q -s -m "Version $version" -m "$body"
+committed=1
+git tag "$tag"
+echo "Committed $(git rev-parse --short HEAD) \"Version $version\", tagged $tag"
+
+if [[ $push == 1 ]]; then
+    git push origin main
+    git push origin "$tag"
+    echo "Pushed main and $tag: the release workflow publishes to PyPI, then the GitHub release"
+else
+    echo "Not pushed: git push origin main && git push origin $tag"
+fi
