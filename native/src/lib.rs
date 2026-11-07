@@ -189,7 +189,7 @@ fn waves_from(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Wave>> {
 }
 
 fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
-    let d = obj.downcast::<PyDict>()?;
+    let d = obj.cast::<PyDict>()?;
     let frame: Vec<u8> = item(d, "frame")?.extract()?;
     let smp_offsets: Vec<usize> = item(d, "smp_cnt_offsets")?.extract()?;
     let sample_offsets: Vec<usize> = item(d, "sample_offsets")?.extract()?;
@@ -198,7 +198,7 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
     let fault = if fault_obj.is_none() {
         None
     } else {
-        let f = fault_obj.downcast::<PyDict>()?;
+        let f = fault_obj.cast::<PyDict>()?;
         Some(Fault {
             waves: waves_from(&item(f, "waves")?)?,
             cycle_s: item(f, "cycle_s")?.extract()?,
@@ -208,7 +208,7 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
         })
     };
     let playback = match d.get_item("playback")? {
-        Some(obj) if !obj.is_none() => Some(playback_from(obj.downcast::<PyDict>()?)?),
+        Some(obj) if !obj.is_none() => Some(playback_from(obj.cast::<PyDict>()?)?),
         _ => None,
     };
     if smp_offsets.len() != sample_offsets.len() || smp_offsets.is_empty() {
@@ -307,7 +307,7 @@ impl Engine {
             .name("sv-engine".into())
             .spawn(move || run(fd, &config, &counters, ready_tx))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let setup = py.allow_threads(move || ready_rx.recv());
+        let setup = py.detach(move || ready_rx.recv());
         match setup {
             Ok(Ok(())) => {
                 *guard = Some(handle);
@@ -325,7 +325,7 @@ impl Engine {
         self.counters.stop.store(true, Ordering::SeqCst);
         let handle = self.thread.lock().unwrap().take();
         if let Some(h) = handle {
-            py.allow_threads(|| {
+            py.detach(|| {
                 let _ = h.join();
             });
         }

@@ -27,7 +27,7 @@ crate-type = ["cdylib"]
 [dependencies]
 libc = "0.2"
 open61850-core = { path = "core" }
-pyo3 = { version = "0.25", features = ["extension-module", "abi3-py310"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
 opt-level = 3

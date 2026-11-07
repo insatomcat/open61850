@@ -9,6 +9,9 @@
   instead. The connection now waits for its queue to have gone, up to
   `send_timeout`, before it closes. Found by vpac-endurance's MMS
   driver.
+- open61850-rt is built with PyO3 0.29 (0.25 before), which fixes
+  RUSTSEC advisories of PyO3 0.25 (one high, one medium). Found by
+  `cargo audit`.
 
 ## 0.9.16 (2026-11-07)
 
