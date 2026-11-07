@@ -258,8 +258,11 @@ def _shortest_float32(raw: bytes) -> float:
         return exact
     for digits in range(1, 10):
         candidate = float(f"{exact:.{digits}g}")
-        if struct.pack("!f", candidate) == raw:
-            return candidate
+        try:
+            if struct.pack("!f", candidate) == raw:
+                return candidate
+        except OverflowError:  # near the largest float32, the rounding goes past it: try more digits
+            continue
     return exact
 
 

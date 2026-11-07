@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A FLOAT32 at the largest float32, 3.4028235e38 or its negative, a
+  common sentinel, is decoded: the search for its shortest decimal
+  rounded past the largest float32 and raised OverflowError, out of
+  every decoder of MMS and GOOSE data. A read response or a report
+  holding it ended a client's receive thread with the association left
+  open, a GOOSE holding it a subscriber's reading thread, a write
+  holding it the server's connection. Found by fuzzing.
+
 ## 0.9.15 (2026-10-28)
 
 - The COMTRADE viewer's R-X diagram takes in a fault's loops past the

@@ -560,3 +560,15 @@ def test_urcb_reservation(serve: Callable[..., tuple[MmsClient, FakeServer]]) ->
     assert not rcb.read_status(client, urcb).free
     rcb.disable(client, urcb)
     assert rcb.read_status(client, urcb).free
+
+
+@pytest.mark.parametrize("value", [3.4028234663852886e38, -3.4028234663852886e38, 1.1754943508222875e-38, 1.4e-45])
+def test_float32_at_its_limits_decodes(value: float) -> None:
+    # The largest float32: its shortest decimal rounds past it, which struct cannot pack (found by fuzzing).
+    import struct
+
+    from open61850.data import decode_data
+
+    raw = struct.pack("!f", value)
+    decoded = decode_data(0x87, b"\x08" + raw)
+    assert struct.pack("!f", decoded.value) == raw
