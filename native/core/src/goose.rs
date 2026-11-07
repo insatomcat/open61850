@@ -537,7 +537,8 @@ fn check_strict_data(all_data: &[u8]) -> Result<(), Deviation> {
         if !sizes.is_empty() && !sizes.contains(&value.len()) {
             return Err(Deviation::DataSize(tag, value.len()));
         }
-        if tag == 0x84 && value.first().is_none_or(|&u| u > 7) {
+        // X.690 8.6.2.3: no octet of bits, no unused bit
+        if tag == 0x84 && value.first().is_none_or(|&u| u > 7 || (u != 0 && value.len() == 1)) {
             return Err(Deviation::BitStringUnused);
         }
         if (tag == 0x85 || tag == 0x86) && value.is_empty() {

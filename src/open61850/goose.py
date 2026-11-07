@@ -230,7 +230,7 @@ def _check_strict_data(all_data: bytes) -> None:
             continue
         if tag in _DATA_SIZES and len(value) not in _DATA_SIZES[tag]:
             raise _strict_error(f"allData value 0x{tag:X} of {len(value)} octets")
-        if tag == 0x84 and (not value or value[0] > 7):
+        if tag == 0x84 and (not value or value[0] > 7 or (value[0] and len(value) == 1)):  # X.690 8.6.2.3
             raise _strict_error("allData BIT STRING without a valid unused-bits octet")
         if tag in (0x85, 0x86) and not value:
             raise _strict_error("empty allData INTEGER")

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The strict GOOSE decoders, Python's and libopen61850's, refuse an
+  allData BIT STRING of no bits that says unused bits (`84 01 02`):
+  X.690 8.6.2.3 has a bit string of no bits say 0. Such a value went
+  through to the subscribers, and open61850-protect's C subscriber read
+  one octet past it. Found by vpac-endurance's fuzzing.
+
 ## 0.9.17 (2026-11-07)
 
 - The MMS server answers a conclude before it closes the connection.

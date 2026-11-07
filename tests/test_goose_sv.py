@@ -150,6 +150,7 @@ def test_goose_strict_accepts_a_conformant_message() -> None:
     without_simulation = [f for f in _goose_fields() if f[0] != 0x87]
     assert _strict(without_simulation) is None  # simulation is DEFAULT FALSE: may be absent
     assert _strict(_goose_fields(t85=b"\x85\x05\x00\xff\xff\xff\xff")) is None  # 2^32 - 1
+    assert _strict(_goose_fields(tab=b"\xab\x06\x84\x01\x00\x86\x01\x01")) is None  # a bit string of no bits
     deep = goose.encode_goose_pdu(goose.GoosePDU(**{**_goose_pdu().__dict__, "num_dat_set_entries": 1,
                                                    "all_data": [_nested(50)]}))
     assert goose.decode_goose_pdu(deep, strict=True).num_dat_set_entries == 1
@@ -176,6 +177,8 @@ def _nested(depth: int) -> StructureData:
     ({"tab": b"\xab\x05\xa9\x00\x86\x01\x01"}, b"", "allData tag 0xA9 is not a Data"),
     ({"tab": b"\xab\x05\x82\x00\x86\x01\x01"}, b"", "allData tag 0x82 is not a Data"),
     ({"tab": b"\xab\x06\x87\x01\x08\x86\x01\x01"}, b"", "allData value 0x87 of 1 octets"),
+    # X.690 8.6.2.3: a bit string of no bits says no unused bit (open61850-protect's C read past it, 2026-11-07)
+    ({"tab": b"\xab\x06\x84\x01\x02\x86\x01\x01"}, b"", "without a valid unused-bits octet"),
 ])
 def test_goose_strict_refuses_what_8_1_does_not_allow(replace: dict, after: bytes, reason: str) -> None:
     refusal = _strict(_goose_fields(**replace), after)
