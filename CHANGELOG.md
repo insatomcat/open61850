@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.17 (2026-11-07)
 
 - The MMS server answers a conclude before it closes the connection.
   The response was queued for the connection's writer thread, then
