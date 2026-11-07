@@ -639,3 +639,22 @@ def test_accepted_sockets_notice_a_vanished_peer(server: MmsServer) -> None:
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
         if hasattr(socket, "TCP_USER_TIMEOUT"):
             assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT) == int(server.keepalive * 1000)
+
+
+def test_a_conclude_is_answered_before_the_close(server: MmsServer) -> None:
+    # The response was queued for the writer thread, then close() emptied the queue: no client got it.
+    from open61850.mms import association, transport
+    from open61850.mms.pdu import ConcludeResponse, conclude_request, decode_pdu, unwrap, wrap
+
+    for _ in range(50):
+        sock = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        transport.send_tpkt(sock, transport.connection_request())
+        assert transport.recv_tpkt(sock)[1] & 0xF0 == 0xD0  # CC
+        transport.send_tpkt(sock, b"\x02\xf0\x80" + association.association_request())
+        transport.recv_tpkt(sock)
+        transport.send_tpkt(sock, b"\x02\xf0\x80" + wrap(conclude_request()))
+        answer = transport.recv_tpkt(sock)
+        assert answer is not None, "closed without the conclude's response"
+        assert isinstance(decode_pdu(unwrap(answer[3:])), ConcludeResponse)
+        assert transport.recv_tpkt(sock) is None  # then closed
+        sock.close()

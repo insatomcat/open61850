@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The MMS server answers a conclude before it closes the connection.
+  The response was queued for the connection's writer thread, then
+  closing the connection emptied the queue: no client ever got it (200
+  of 200), and one that waits for it saw the connection closed
+  instead. The connection now waits for its queue to have gone, up to
+  `send_timeout`, before it closes. Found by vpac-endurance's MMS
+  driver.
+
 ## 0.9.16 (2026-11-07)
 
 - A FLOAT32 at the largest float32, 3.4028235e38 or its negative, a

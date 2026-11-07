@@ -95,16 +95,23 @@ class ServerConnection:
             if not behind:
                 self._queue.append((now, data))
                 self._queued += len(data)
-                self._ready.notify()
+                self._ready.notify_all()
         if behind:
             self.close()
+
+    def drain(self, timeout: float) -> bool:
+        """Wait until what was queued has gone, up to ``timeout`` s; False when it has not (or the connection closed)."""
+        with self._ready:
+            return self._ready.wait_for(
+                lambda: self.closed.is_set() or (not self._queue and self._sending is None), timeout
+            ) and not self.closed.is_set()
 
     def close(self) -> None:
         self.closed.set()
         with self._ready:
             self._queue.clear()
             self._queued = 0
-            self._ready.notify()
+            self._ready.notify_all()
         self.iso.close()
 
     def _write_loop(self) -> None:
@@ -118,7 +125,9 @@ class ServerConnection:
                     self._sending, data = self._queue.popleft()
                     self._queued -= len(data)
                 self.iso.send(data)
-                self._sending = None
+                with self._ready:
+                    self._sending = None
+                    self._ready.notify_all()  # drain() waits for the queue to have gone
         except OSError:  # send timeout, reset
             self.close()
 
@@ -139,6 +148,8 @@ class ServerConnection:
                 if user_data is None:
                     break
                 if not self._handle(pdu.unwrap(user_data)):
+                    # A conclude: its response is queued, and close() would drop it. It goes first.
+                    self.drain(self.server.send_timeout)
                     break
         except (TransportError, MmsProtocolError, OSError):
             pass
