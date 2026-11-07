@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.16 (2026-11-07)
 
 - A FLOAT32 at the largest float32, 3.4028235e38 or its negative, a
   common sentinel, is decoded: the search for its shortest decimal
