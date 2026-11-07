@@ -300,6 +300,8 @@ DEVIATIONS: dict[str, Any] = {
     "utc-time of 9": lambda f: (_with_data(f, b"\x91\x09" + bytes(9)), b""),
     "bit string unused 8": lambda f: (_with_data(f, b"\x84\x02\x08\x00"), b""),
     "empty bit string": lambda f: (_with_data(f, b"\x84\x00"), b""),
+    "bit string of no bits, unused 2": lambda f: (_with_data(f, b"\x84\x01\x02"), b""),
+    "bit string of no bits, unused 0": lambda f: (_with_data(f, b"\x84\x01\x00"), b""),
     "empty unsigned": lambda f: (_with_data(f, b"\x86\x00"), b""),
     "visible string outside the alphabet": lambda f: (_with_data(f, b"\x8a\x01\x01"), b""),
     "application-class data": lambda f: (_with_data(f, b"\x43\x00"), b""),
@@ -328,7 +330,8 @@ def test_strict_parity_on_each_deviation() -> None:
                 refusal = _strict_outcome(goose.decode_goose_pdu, goose.GooseDecodeError, changed)
                 verdicts[(name, refusal is None)] += 1
     for name in DEVIATIONS:
-        accepted = name in ("stNum of 5 octets with 00", "binary-time of 4", "deep structure, good")
+        accepted = name in ("stNum of 5 octets with 00", "binary-time of 4", "deep structure, good",
+                            "bit string of no bits, unused 0")
         assert verdicts[(name, accepted)] > 0 and verdicts[(name, not accepted)] == 0, (name, verdicts)
 
 
