@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.18 (2026-11-07)
 
 - The strict GOOSE decoders, Python's and libopen61850's, refuse an
   allData BIT STRING of no bits that says unused bits (`84 01 02`):
