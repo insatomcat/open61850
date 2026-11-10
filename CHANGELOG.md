@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The SV publisher has a merging unit's clock (`Clock`, `ClockState`,
+  `Publisher.set_clock`, before the start or while running): from a
+  true time on, the merging unit's time is ahead by an offset, drifts
+  by so many parts per billion (holdover), and every stream sends a
+  given smpSynch. Samples are taken at the true time and labelled with
+  the merging unit's: a step ahead skips smpCnt values, a step back
+  sends some again, a drift skips none. Both engines (open61850-rt
+  0.9.22) give the same bytes. Made to test PMUs on a grandmaster
+  step, a holdover and a loss of synchronisation (vpac-wams).
+
 ## 0.9.21 (2026-11-10)
 
 - `open61850.sv_receiver.Receiver` receives a few SV streams of a busy

@@ -29,7 +29,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
 | `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
 | `open61850.sv_receiver` | SV reception for a few streams: `Receiver` hands over each stream's samples as fixed-size records, many at a time (native engine reading the capture's ring without the GIL, or a Python thread) |
-| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), waveforms rebuilt from phasors pushed while it runs (a simulator's trajectory), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
+| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), waveforms rebuilt from phasors pushed while it runs (a simulator's trajectory), a merging unit's clock off true time (steps, holdover, smpSynch), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
 | `open61850.comtrade` | COMTRADE records (IEEE C37.111 1991, 1999, 2013; ASCII, BINARY, BINARY32, FLOAT32): channels in primary or secondary values, sample times, resampling; records written in revision 1999 or 2013 |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
@@ -223,6 +223,17 @@ with Publisher("eth1") as pub:
         pub.push(0, start * 10**9 + k * 20_000_000, [(v, 0.0), (v, -2 * math.pi / 3), (v, 2 * math.pi / 3)])
     pub.start(at_second=start)
     ...                                    # then each point at least a frame period before its time
+```
+
+The publisher's `Clock` is the merging unit's own clock against true time, to test what a subscriber does when it goes wrong. Each `ClockState` says, from a true time on, how far the merging unit's time is ahead (`offset_ns`), how fast it drifts (`drift_ppb`, a clock in holdover) and which smpSynch every stream sends. Samples are taken at the true time and labelled (second and smpCnt) with the merging unit's: a step ahead skips smpCnt values, a step back sends some again, a drift moves the samples steadily without skipping any. Waves and trajectories are taken at the exact time, playbacks and faults at the nearest sample. States are given before the start or while running (`Publisher.set_clock`).
+
+```python
+from open61850.sv import ClockState
+
+ns = 10**9
+pub.set_clock(ClockState(at_ns=(start + 10) * ns, offset_ns=-1_000_000))     # a grandmaster step of -1 ms
+pub.set_clock(ClockState(at_ns=(start + 20) * ns, offset_ns=-1_000_000,      # GPS lost: holdover, 50 ppb,
+                         drift_ppb=50.0, smp_synch=1))                         # smpSynch local
 ```
 
 Waveforms are functions of UNIX time, so several streams, processes or machines on the same clock stay in phase. With `open61850[rt]` the frames are sent by the Rust engine: absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for all streams, optional `SCHED_FIFO` priority and CPU pinning. Without it, a Python thread sends the same frames, with only the precision of `time.sleep` (tests, low rates). Measured on loopback on a Xeon server, 3 streams at 4800 samples/s, `SCHED_FIFO` 50: every sample sent, delay after the nominal sample time median 6 µs, 99th percentile 14 µs, maximum 46 µs over 10 s.

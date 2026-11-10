@@ -242,7 +242,8 @@ def encode_int32_samples(values: list[tuple[int, int]]) -> bytes:
 
 # --- publication (open61850.sv_publisher) -------------------------------------
 
-_PUBLISHER_NAMES = ("Publisher", "SvStream", "Wave", "Fault", "Playback", "Trajectory", "three_phase")
+_PUBLISHER_NAMES = ("Publisher", "SvStream", "Wave", "Fault", "Playback", "Trajectory", "Clock", "ClockState",
+                    "three_phase")
 
 
 def __getattr__(name: str):

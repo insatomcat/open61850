@@ -14,12 +14,17 @@ import pytest
 
 from open61850 import sv
 from open61850.sv_publisher import (
+    TRUE_TIME,
+    Clock,
+    ClockState,
     Fault,
     Playback,
     Publisher,
     SvStream,
     Trajectory,
     Wave,
+    _clock_next,
+    _native_clock_state,
     _native_streams,
     build_template,
     render_frame,
@@ -72,6 +77,51 @@ def test_native_render_matches_python(seed: int) -> None:
         first = rng.randrange(0, rate, asdus)
         i = rng.randrange(len(streams))
         assert engine.render(i, second, first) == render_frame(templates[i], streams[i], second, first, rate)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_native_shifted_render_matches_python(seed: int) -> None:
+    rng = random.Random(500 + seed)
+    rate, asdus = rng.choice([(4800, 2), (4000, 1), (14400, 6)])
+    streams = [_random_stream(rng) for _ in range(3)]
+    templates = [build_template(s, asdus, rate) for s in streams]
+    engine = rt.Engine("lo", rate, asdus, _native_streams(streams, templates, rate), 0)
+    for _ in range(200):
+        second = rng.choice(BASES) + rng.randint(0, 5)
+        first = rng.randrange(0, rate)
+        shift = rng.choice([0, 1, -1, 1_000_000, -2_500_000, 37 * 10**9, rng.randint(-10**9, 10**9)])
+        synch = rng.choice([None, 0, 1, 2, 5])
+        i = rng.randrange(len(streams))
+        assert engine.render(i, second, first, shift, synch) == render_frame(templates[i], streams[i], second, first,
+                                                                             rate, shift, synch)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_native_clock_matches_python(seed: int) -> None:
+    rng = random.Random(700 + seed)
+    rate = rng.choice([4800, 4000, 14400])
+    base = rng.choice(BASES[1:]) * 1_000_000_000
+    states, at = [], base
+    for _ in range(rng.randint(1, 6)):
+        at += rng.randint(1, 3 * 10**9)
+        states.append(ClockState(at, offset_ns=rng.choice([0, 1000, -1_000_000, 37 * 10**9, rng.randint(-10**8, 10**8)]),
+                                 drift_ppb=rng.choice([0.0, 50.0, -4000.0, rng.uniform(-1e5, 1e5)]),
+                                 smp_synch=rng.choice([None, 1, 2])))
+    clock = Clock(states)
+    stream = SvStream("SV", 1, "01:0c:cd:04:00:01", "02:00:00:00:00:01", three_phase(i_peak=1, v_peak=1))
+    engine = rt.Engine("lo", rate, 2, _native_streams([stream], [build_template(stream, 2, rate)], rate), 0)
+    for st in states:
+        engine.set_clock(*_native_clock_state(st))
+    state, n = TRUE_TIME, base // 1_000_000_000 * rate
+    for _ in range(3000):
+        native = engine.clock_next(_native_clock_state(state), n)
+        state, n, shift, target = _clock_next(clock, state, n, rate)
+        assert native == (state.at_ns, n, shift, target)
+        n += rng.choice([2, 2, 2, 999, 4800])
+    with pytest.raises(ValueError):
+        engine.set_clock(states[-1].at_ns, 0, 0.0, -1)  # not after the last state
+    with pytest.raises(ValueError):
+        engine.set_clock(states[-1].at_ns + 1, 0, 0.0, 256)
 
 
 def _trajectory_points(rng: random.Random, channels: int, base: int) -> list[tuple[int, list[tuple[float, float]]]]:
@@ -261,3 +311,34 @@ def test_native_engine_follows_a_trajectory_pushed_while_it_runs() -> None:
         x = smp / rate
         assert abs(received[(start, smp)] / 100 - 100 * math.cos(2 * math.pi * 50.5 * x)) < 0.02
     assert publisher.stats().trajectory_underruns == 0
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AF_PACKET is Linux only")
+def test_native_engine_follows_its_clock() -> None:
+    from open61850.capture import PacketCapture
+
+    try:
+        cap = PacketCapture("lo", (0x88BA,), timeout=0.05, outgoing=False, buffer_bytes=16 << 20)
+    except PermissionError:
+        pytest.skip("needs CAP_NET_RAW")
+    rate = 4800
+    stream = SvStream("IED01_MU01_CK", 0x4000, "01:0c:cd:04:00:01", "02:00:00:00:00:01",
+                      three_phase(i_peak=10, v_peak=100), smp_synch=sv.SMP_SYNCH_GLOBAL)
+    publisher = Publisher("lo", rate=rate, asdus_per_frame=2, engine="native")
+    publisher.add(stream)
+    start = int(time.time()) + 1
+    ns = 1_000_000_000
+    asdus = []
+    with cap:
+        publisher.start(at_second=start)
+        # a grandmaster step of -1 ms at 0.5 s, then holdover: smpSynch local
+        publisher.set_clock(ClockState(start * ns + ns // 2, offset_ns=-1_000_000, smp_synch=sv.SMP_SYNCH_LOCAL))
+        while time.time() < start + 1.2:
+            got = cap.recv()
+            if got is not None and start <= got.timestamp < start + 1:
+                asdus.extend(sv.decode_sv_frame(got.data)[1].asdus)
+        publisher.stop()
+    counts = [a.smp_cnt for a in asdus]
+    # 2400 samples to 0.5 s, then back to the first taken at or after 0.5 s - 1 ms: 2396 (4.8 samples back)
+    assert counts[:2400] == list(range(2400)) and counts[2400:2402] == [2396, 2397]
+    assert {a.smp_synch for a in asdus[:2400]} == {2} and {a.smp_synch for a in asdus[2400:]} == {1}

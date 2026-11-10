@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import sys
 import time
@@ -15,6 +16,9 @@ import pytest
 from open61850 import sv
 from open61850.sv_publisher import (
     SIMULATION_BIT,
+    TRUE_TIME,
+    Clock,
+    ClockState,
     Fault,
     PackedRows,
     Playback,
@@ -22,6 +26,8 @@ from open61850.sv_publisher import (
     SvStream,
     Trajectory,
     Wave,
+    _clock_next,
+    _clock_start,
     build_template,
     render_frame,
     sample_values,
@@ -378,3 +384,138 @@ def test_trajectory_drops_the_points_behind() -> None:
     _traj_stream(t)
     t.values(1, 0, RATE)  # 1 s is point 50: those before it dropped
     assert [p[0] for p in t.points()][:2] == [50 * 20_000_000, 51 * 20_000_000]
+
+
+# --- the merging unit's clock --------------------------------------------------
+
+NS = 1_000_000_000
+
+
+def test_clock_true_time_keeps_the_deadlines() -> None:
+    clock = Clock()
+    state, n = _clock_start(clock, 1_790_000_000, RATE)
+    assert state == TRUE_TIME and n == 1_790_000_000 * RATE
+    for k in range(5000):
+        state, m, shift, target = _clock_next(clock, state, n + 2 * k, RATE)
+        second, smp = divmod(m, RATE)
+        assert (m, shift) == (n + 2 * k, 0)
+        assert target == second * NS + smp * NS // RATE  # the formula the engines had
+
+
+def test_clock_step_ahead_skips_and_step_back_repeats_smp_cnt() -> None:
+    t0 = 1_790_000_000 * NS
+    clock = Clock([ClockState(t0 + NS // 2, offset_ns=1_000_000), ClockState(t0 + NS, offset_ns=-2_000_000)])
+    state, n = _clock_start(clock, 1_790_000_000, RATE)
+    labels, shifts, times = [], [], []
+    while n < (1_790_000_001 + 1) * RATE:
+        state, n, shift, target = _clock_next(clock, state, n, RATE)
+        labels.append(n)
+        shifts.append(shift)
+        times.append(target)
+        n += 2
+    assert all(b > a for a, b in itertools.pairwise(times))  # sent in true time order
+    jumps = [(b - a, s) for a, b, s in zip(labels, labels[1:], shifts[1:]) if b - a != 2]
+    # +1 ms: from 2398 (sent before 0.5 s) to 2405, the first sample at or after 0.5 s + 1 ms;
+    # -3 ms: from 4803 (the last before 1 s + 1 ms) back to 4791, the first at or after 1 s - 2 ms
+    assert [j for j, _s in jumps] == [7, -12]
+    assert shifts[0] == 0 and shifts[-1] == -2_000_000
+    # each frame goes out at the true time its first sample is taken
+    for n, shift, target in zip(labels, shifts, times):
+        second, smp = divmod(n, RATE)
+        assert target == second * NS + smp * NS // RATE - shift
+
+
+def test_clock_drift_moves_the_samples_steadily() -> None:
+    t0 = 1_790_000_000 * NS
+    clock = Clock([ClockState(t0, drift_ppb=5000.0, smp_synch=sv.SMP_SYNCH_LOCAL)])  # 5 us a second
+    state, n = _clock_start(clock, 1_790_000_000, RATE)
+    assert state.smp_synch == 1
+    gaps = set()
+    last = None
+    while n < (1_790_000_010) * RATE:
+        state, m, shift, target = _clock_next(clock, state, n, RATE)
+        if last is not None:
+            gaps.add(m - last)
+        last, n = m, m + 2
+    assert gaps == {2}  # a drifting clock skips no sample: its frames come a little slower or faster
+    assert abs(shift - 50_000) <= 5  # 10 s at 5 ppm
+    # the last frame, two samples before 10 s of the clock, goes out 50 us earlier in true time
+    assert m == 1_790_000_010 * RATE - 2 and abs((target - t0) - (10 * NS - 416_667 - 50_000)) <= 5
+
+
+def test_clock_states_set_before_the_start() -> None:
+    t0 = 1_790_000_000 * NS
+    clock = Clock([ClockState(t0 - 5 * NS, offset_ns=37 * NS, smp_synch=2)])  # 37 s ahead (TAI for UTC)
+    state, n = _clock_start(clock, 1_790_000_000, RATE)
+    assert state.offset_ns == 37 * NS and n == (1_790_000_037) * RATE
+
+
+def test_clock_checks() -> None:
+    clock = Clock([ClockState(10)])
+    with pytest.raises(ValueError):
+        clock.set(ClockState(10))
+    with pytest.raises(ValueError):
+        ClockState(0, smp_synch=256)
+    with pytest.raises(ValueError):
+        ClockState(0, drift_ppb=2e8)
+    publisher = Publisher("lo", rate=RATE, engine="python")
+    publisher.set_clock(ClockState(20, smp_synch=1))
+    assert publisher.clock.states()[-1].smp_synch == 1
+
+
+def test_shifted_samples_take_the_signal_at_their_true_time() -> None:
+    rate = 4000  # 250 us a sample: a shift of whole samples is exact
+    stream = _stream(waves=three_phase(i_peak=10, v_peak=100, freq_hz=49.7))
+    template = build_template(stream, 2, rate)
+    for second, smp in [(1_790_000_000, 0), (1_790_000_003, 1999), (1_790_000_007, 3998)]:
+        shifted = sv.decode_sv_frame(render_frame(template, stream, second, smp, rate, shift_ns=3 * 250_000))[1]
+        earlier = [sample_values(stream, *divmod(second * rate + smp + i - 3, rate), rate) for i in range(2)]
+        for asdu, values in zip(shifted.asdus, earlier):
+            got = [v for v, _q in sv.decode_int32_samples(asdu.sample)]
+            assert all(abs(a - b) <= 1 for a, b in zip(got, values))
+        assert [a.smp_cnt for a in shifted.asdus] == [smp, (smp + 1) % rate]
+
+
+def test_clock_replaces_smp_synch() -> None:
+    stream = _stream()
+    template = build_template(stream, 2, RATE)
+    plain = sv.decode_sv_frame(render_frame(template, stream, 1_790_000_000, 0, RATE))[1]
+    local = sv.decode_sv_frame(render_frame(template, stream, 1_790_000_000, 0, RATE, smp_synch=1))[1]
+    assert [a.smp_synch for a in plain.asdus] == [2, 2] and [a.smp_synch for a in local.asdus] == [1, 1]
+
+
+def test_shifted_playback_takes_the_nearest_row() -> None:
+    rows = [[k] * 9 for k in range(100)]
+    stream = _stream(playback=Playback(rows, start_second=1_790_000_000))
+    template = build_template(stream, 2, RATE)
+    frame = sv.decode_sv_frame(render_frame(template, stream, 1_790_000_000, 50, RATE, shift_ns=1_000_000))[1]
+    assert [sv.decode_int32_samples(a.sample)[0][0] for a in frame.asdus] == [45, 46]  # 4.8 samples back: 5
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AF_PACKET is Linux only")
+def test_python_engine_follows_its_clock() -> None:
+    from open61850.capture import PacketCapture
+
+    try:
+        cap = PacketCapture("lo", (0x88BA,), timeout=0.05, outgoing=False)
+    except PermissionError:
+        pytest.skip("needs CAP_NET_RAW")
+    rate = 400  # 2.5 ms a sample
+    publisher = Publisher("lo", rate=rate, asdus_per_frame=2, engine="python")
+    publisher.add(_stream())
+    start = int(time.time()) + 1
+    with cap:
+        publisher.start(at_second=start)
+        publisher.set_clock(ClockState(start * NS + NS // 2, offset_ns=10_000_000, smp_synch=1))  # 10 ms ahead
+        frames = []
+        while time.time() < start + 1.2:
+            got = cap.recv()
+            if got is not None:
+                frames.append(got)
+        publisher.stop()
+    asdus = [(f.timestamp, a) for f in frames for a in sv.decode_sv_frame(f.data)[1].asdus]  # type: ignore[index]
+    first = [(ts, a) for ts, a in asdus if start <= ts < start + 1]
+    counts = [a.smp_cnt for _ts, a in first]
+    # 200 samples, then 4 skipped (10 ms at 400/s), smpSynch local from then on
+    assert counts[:200] == list(range(200)) and counts[200:202] == [204, 205]
+    assert {a.smp_synch for _ts, a in first[:200]} == {2} and {a.smp_synch for _ts, a in first[200:]} == {1}

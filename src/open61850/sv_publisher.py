@@ -14,7 +14,9 @@ Timing follows the usual merging-unit convention: sample ``smpCnt`` of second
 ``s`` is taken at ``s + smpCnt / rate`` (UNIX time), smpCnt wraps every
 second, and a frame goes out at the time of its first sample. Waveforms are
 functions of that absolute time, so separate streams, processes or machines
-synchronised on the same clock produce coherent phases.
+synchronised on the same clock produce coherent phases. A publisher's
+:class:`Clock` moves its merging unit's time off true time (a grandmaster
+step, a holdover) to test subscribers.
 
 Two engines send the frames:
 
@@ -59,6 +61,9 @@ __all__ = [
     "Playback",
     "PackedRows",
     "Trajectory",
+    "Clock",
+    "ClockState",
+    "TRUE_TIME",
     "SvStream",
     "Template",
     "PublisherStats",
@@ -92,14 +97,18 @@ class Wave:
     scale: float = 1.0
     quality: int = 0
 
-    def value(self, second: int, smp_cnt: int, rate: int) -> int:
-        """The INT32 sent for sample ``smp_cnt`` of UNIX second ``second``."""
+    def value(self, second: int, smp_cnt: int, rate: int, shift_ns: int = 0) -> int:
+        """The INT32 sent for sample ``smp_cnt`` of UNIX second ``second``.
+
+        ``shift_ns``: the sample is taken that much before its label's time
+        (a merging unit's clock ahead of true time, :class:`ClockState`).
+        """
         if self.freq_hz == 0.0 or self.amplitude == 0.0:
             x = self.offset
         else:
             # The phase is taken per second so that large UNIX times keep
             # their precision: frac(f * s) needs ~37 bits, leaving ~16 for the fraction.
-            cycles = math.fmod(self.freq_hz * second, 1.0) + self.freq_hz * smp_cnt / rate
+            cycles = math.fmod(self.freq_hz * second, 1.0) + self.freq_hz * smp_cnt / rate - self.freq_hz * shift_ns / 1e9
             x = self.offset + self.amplitude * math.sin(2.0 * math.pi * cycles + math.radians(self.phase_deg))
         return _int32(round(x * self.scale))
 
@@ -351,14 +360,15 @@ class Trajectory:
         with self._lock:
             return list(self._points)
 
-    def values(self, second: int, smp_cnt: int, rate: int) -> Optional[list[tuple[float, float]]]:
+    def values(self, second: int, smp_cnt: int, rate: int, shift_ns: int = 0) -> Optional[list[tuple[float, float]]]:
         """The (magnitude, total angle) of each channel at this sample, ``None`` before the first point.
 
         The total angle includes ``2 pi f0 t``. Called in increasing time
-        (it drops the points behind).
+        (it drops the points behind). ``shift_ns``: the sample is taken that
+        much before its label's time (:meth:`Wave.value`).
         """
         # Exact comparisons: point time t_p is at or before the sample when t_p * rate <= key.
-        key = second * _NS * rate + smp_cnt * _NS
+        key = second * _NS * rate + smp_cnt * _NS - shift_ns * rate
         with self._lock:
             pts = self._points
             while len(pts) >= 3 and pts[1][0] * rate <= key:
@@ -367,19 +377,109 @@ class Trajectory:
                 return None
             if len(pts) >= 2 and pts[1][0] * rate > key:
                 (ta, a), (tb, b) = pts[0], pts[1]
-                w = (float(second * _NS - ta) + smp_cnt * 1e9 / rate) / float(tb - ta)
+                w = (float(second * _NS - ta - shift_ns) + smp_cnt * 1e9 / rate) / float(tb - ta)
                 out = [(ma + w * (mb - ma), pa + w * _wrap(pb - pa)) for (ma, pa), (mb, pb) in zip(a, b)]
             else:
                 self.underruns += 1
                 ta, a = pts[-1]
                 if len(pts) >= 2:
                     tp, p = pts[-2]
-                    w = (float(second * _NS - ta) + smp_cnt * 1e9 / rate) / float(ta - tp)
+                    w = (float(second * _NS - ta - shift_ns) + smp_cnt * 1e9 / rate) / float(ta - tp)
                     out = [(ma, pa + w * _wrap(pa - pp)) for (ma, pa), (_mp, pp) in zip(a, p)]
                 else:
                     out = list(a)
-        cycles = math.fmod(self.f0 * second, 1.0) + self.f0 * smp_cnt / rate
+        cycles = math.fmod(self.f0 * second, 1.0) + self.f0 * smp_cnt / rate - self.f0 * shift_ns / 1e9
         return [(m, _TWO_PI * cycles + angle) for m, angle in out]
+
+
+@dataclass(frozen=True)
+class ClockState:
+    """A merging unit's clock from true UNIX time ``at_ns`` on.
+
+    Its time is true time plus ``offset_ns``, plus ``drift_ppb`` ns for
+    each second past ``at_ns`` (a clock in holdover, its oscillator off).
+    ``smp_synch`` is the smpSynch every stream sends from then on (0 none,
+    1 local, 2 global; ``None``: each stream's own).
+    """
+
+    at_ns: int
+    offset_ns: int = 0
+    drift_ppb: float = 0.0
+    smp_synch: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.smp_synch is not None and not 0 <= self.smp_synch <= 255:
+            raise ValueError("smp_synch must be an octet")
+        if not -1e8 < self.drift_ppb < 1e8:
+            raise ValueError("drift_ppb must be under 10 % in size")
+
+    def offset_at_label(self, label_ns: int) -> int:
+        """The offset (ns) of the sample labelled ``label_ns``: its true time is ``label_ns`` minus it."""
+        if self.drift_ppb == 0.0:
+            return self.offset_ns
+        d = self.drift_ppb * 1e-9
+        return self.offset_ns + round(d * float(label_ns - self.offset_ns - self.at_ns) / (1.0 + d))
+
+    def offset_at(self, t_ns: int) -> int:
+        """The offset (ns) at true time ``t_ns``."""
+        if self.drift_ppb == 0.0:
+            return self.offset_ns
+        return self.offset_ns + round(self.drift_ppb * 1e-9 * float(t_ns - self.at_ns))
+
+    def label_at(self, t_ns: int, rate: int) -> int:
+        """The first sample number (second * rate + smpCnt) taken at or after true time ``t_ns``."""
+        return -((-(t_ns + self.offset_at(t_ns)) * rate) // _NS)
+
+
+class Clock:
+    """The merging unit's clock of a :class:`Publisher`: states in true time, one after the other.
+
+    A frame is sent at the true time its first sample is taken; each sample
+    carries the merging unit's time as its second and smpCnt, and the value
+    of the signal at the true time it is taken. Before the first state the
+    clock is true time. A state that moves the clock ahead makes smpCnt
+    skip the samples between, one that moves it back sends the samples of
+    the time it goes back again (repeated smpCnt). The engines change state
+    between two frames: at the first frame whose time under the old state
+    reaches ``at_ns``.
+
+    Playback and fault rows, which are on the true sample grid, are taken
+    at the nearest sample; waves and trajectories at the exact time.
+    """
+
+    def __init__(self, states: Iterable[ClockState] = ()) -> None:
+        self._states: collections.deque[ClockState] = collections.deque()
+        self._lock = threading.Lock()
+        for st in states:
+            self.set(st)
+
+    def set(self, state: ClockState) -> None:
+        """Add a state; their ``at_ns`` must increase."""
+        with self._lock:
+            if self._states and state.at_ns <= self._states[-1].at_ns:
+                raise ValueError("clock states must come in increasing time")
+            self._states.append(state)
+
+    def states(self) -> list[ClockState]:
+        with self._lock:
+            return list(self._states)
+
+    def next_after(self, current: ClockState) -> Optional[ClockState]:
+        """The state that follows ``current``."""
+        with self._lock:
+            for st in self._states:
+                if st.at_ns > current.at_ns:
+                    return st
+        return None
+
+
+TRUE_TIME = ClockState(at_ns=-(1 << 62))  # the clock before any state: true time
+
+
+def _label_ns(n: int, rate: int) -> int:
+    """UNIX nanoseconds of sample number ``n`` (second * rate + smpCnt), as the deadlines are computed."""
+    second, smp = divmod(n, rate)
+    return second * _NS + smp * _NS // rate
 
 
 @dataclass
@@ -478,6 +578,7 @@ class Template:
     smp_cnt_offsets: tuple[int, ...]
     sample_offsets: tuple[int, ...]
     channels: int
+    smp_synch_offsets: tuple[int, ...] = ()
 
 
 def build_template(stream: SvStream, asdus_per_frame: int, rate: int) -> Template:
@@ -507,8 +608,8 @@ def build_template(stream: SvStream, asdus_per_frame: int, rate: int) -> Templat
     )
     if stream.simulation:
         frame = _set_reserved1(frame, SIMULATION_BIT)
-    smp_offsets, sample_offsets = _locate(frame, asdus_per_frame)
-    return Template(frame, tuple(smp_offsets), tuple(sample_offsets), channels)
+    smp_offsets, sample_offsets, synch_offsets = _locate(frame, asdus_per_frame)
+    return Template(frame, tuple(smp_offsets), tuple(sample_offsets), channels, tuple(synch_offsets))
 
 
 def _set_reserved1(frame: bytes, bits: int) -> bytes:
@@ -517,22 +618,24 @@ def _set_reserved1(frame: bytes, bits: int) -> bytes:
     return frame[: at + 4] + reserved1.to_bytes(2, "big") + frame[at + 6 :]
 
 
-def _locate(frame: bytes, asdus: int) -> tuple[list[int], list[int]]:
-    """Offsets of smpCnt and sample in each ASDU of an encoded SV frame."""
+def _locate(frame: bytes, asdus: int) -> tuple[list[int], list[int], list[int]]:
+    """Offsets of smpCnt, sample and smpSynch in each ASDU of an encoded SV frame."""
     header = (18 if frame[12:14] == b"\x81\x00" else 14) + 8
     sav = ber.decode_tlv(frame, header)
     sav_start = sav.end - len(sav.value)
     seq = next(t for t in _tlvs_at(frame, sav_start, sav.end) if t.tag == 0xA2)
-    smp_offsets, sample_offsets = [], []
+    smp_offsets, sample_offsets, synch_offsets = [], [], []
     for item in _tlvs_at(frame, seq.end - len(seq.value), seq.end):
         for fld in _tlvs_at(frame, item.end - len(item.value), item.end):
             if fld.tag == 0x82:
                 smp_offsets.append(fld.end - len(fld.value))
+            elif fld.tag == 0x85:
+                synch_offsets.append(fld.end - len(fld.value))
             elif fld.tag == 0x87:
                 sample_offsets.append(fld.end - len(fld.value))
-    if len(smp_offsets) != asdus or len(sample_offsets) != asdus:
+    if len(smp_offsets) != asdus or len(sample_offsets) != asdus or len(synch_offsets) != asdus:
         raise ValueError("unexpected SV frame layout")
-    return smp_offsets, sample_offsets
+    return smp_offsets, sample_offsets, synch_offsets
 
 
 def _tlvs_at(data: bytes, start: int, end: int) -> list[ber.Tlv]:
@@ -544,32 +647,52 @@ def _tlvs_at(data: bytes, start: int, end: int) -> list[ber.Tlv]:
     return out
 
 
-def sample_values(stream: SvStream, second: int, smp_cnt: int, rate: int) -> list[int]:
-    """The INT32 values of every channel of ``stream`` at one sample."""
-    return [value for value, _quality in _samples(stream, second, smp_cnt, rate)]
+def sample_values(stream: SvStream, second: int, smp_cnt: int, rate: int, shift_ns: int = 0) -> list[int]:
+    """The INT32 values of every channel of ``stream`` at one sample (``shift_ns``: :meth:`Wave.value`)."""
+    return [value for value, _quality in _samples(stream, second, smp_cnt, rate, shift_ns)]
 
 
-def _samples(stream: SvStream, second: int, smp_cnt: int, rate: int) -> list[tuple[int, int]]:
+def _true_sample(second: int, smp_cnt: int, rate: int, shift_ns: int) -> tuple[int, int]:
+    """The (second, smpCnt) of the true sample grid nearest the time a shifted sample is taken."""
+    if shift_ns == 0:
+        return second, smp_cnt
+    back = (shift_ns * rate + _NS // 2) // _NS
+    return divmod(second * rate + smp_cnt - back, rate)
+
+
+def _samples(stream: SvStream, second: int, smp_cnt: int, rate: int, shift_ns: int = 0) -> list[tuple[int, int]]:
     playback = stream.playback
-    if playback is not None and (row := playback.index(second, smp_cnt, rate)) is not None:
-        qualities = playback.qualities[row] if playback.qualities is not None else [w.quality for w in stream.waves]
-        return list(zip(playback.values[row], qualities))
+    if playback is not None:
+        row = playback.index(*_true_sample(second, smp_cnt, rate, shift_ns), rate)
+        if row is not None:
+            qualities = playback.qualities[row] if playback.qualities is not None else [w.quality for w in stream.waves]
+            return list(zip(playback.values[row], qualities))
     if stream.trajectory is not None:
-        phasors = stream.trajectory.values(second, smp_cnt, rate)
+        phasors = stream.trajectory.values(second, smp_cnt, rate, shift_ns)
         if phasors is not None:
             return [(_int32(round(m * math.cos(angle) * w.scale)), w.quality) for (m, angle), w in zip(phasors, stream.waves)]
-    return [(w.value(second, smp_cnt, rate), w.quality) for w in stream.waves_at(second, smp_cnt, rate)]
+    waves = stream.waves_at(*_true_sample(second, smp_cnt, rate, shift_ns), rate)
+    return [(w.value(second, smp_cnt, rate, shift_ns), w.quality) for w in waves]
 
 
-def render_frame(template: Template, stream: SvStream, second: int, first_smp: int, rate: int) -> bytes:
-    """The frame carrying samples ``first_smp``, ``first_smp + 1``... of UNIX second ``second``."""
+def render_frame(template: Template, stream: SvStream, second: int, first_smp: int, rate: int,
+                 shift_ns: int = 0, smp_synch: Optional[int] = None) -> bytes:
+    """The frame carrying samples ``first_smp``, ``first_smp + 1``... of UNIX second ``second``.
+
+    ``shift_ns`` and ``smp_synch`` come from the publisher's :class:`Clock`:
+    the samples are taken ``shift_ns`` before their labels' time, and
+    ``smp_synch``, when given, replaces the stream's own.
+    """
     frame = bytearray(template.frame)
     for i, (smp_at, sample_at) in enumerate(zip(template.smp_cnt_offsets, template.sample_offsets)):
         sec, smp = divmod(first_smp + i, rate)
         sec += second
         struct.pack_into("!H", frame, smp_at, smp)
-        for ch, (value, quality) in enumerate(_samples(stream, sec, smp, rate)):
+        for ch, (value, quality) in enumerate(_samples(stream, sec, smp, rate, shift_ns)):
             struct.pack_into("!iI", frame, sample_at + 8 * ch, value, quality)
+    if smp_synch is not None:
+        for at in template.smp_synch_offsets:
+            frame[at] = smp_synch
     return bytes(frame)
 
 
@@ -601,6 +724,8 @@ class Publisher:
 
     ``engine`` "auto" takes the native engine when installed, else Python.
     ``rt_priority`` (1-99, SCHED_FIFO) and ``cpu`` apply to the native engine.
+    ``clock`` is the merging unit's clock against true time (:class:`Clock`;
+    true time when it has no state), changed while running by :meth:`set_clock`.
     """
 
     iface: str
@@ -610,6 +735,7 @@ class Publisher:
     rt_priority: Optional[int] = None
     cpu: Optional[int] = None
     streams: list[SvStream] = field(default_factory=list)
+    clock: Clock = field(default_factory=Clock)
 
     def __post_init__(self) -> None:
         if self.rate % self.asdus_per_frame:
@@ -646,13 +772,19 @@ class Publisher:
                 raise RuntimeError(f"open61850-rt {open61850_rt.__version__} cannot play back samples: 0.4 or later")
             if not hasattr(open61850_rt.Engine, "push") and any(s.trajectory is not None for s in self.streams):
                 raise RuntimeError(f"open61850-rt {open61850_rt.__version__} cannot follow a trajectory: 0.9.19 or later")
+            clock_states = self.clock.states()
+            if not hasattr(open61850_rt.Engine, "set_clock") and clock_states:
+                raise RuntimeError(f"open61850-rt {open61850_rt.__version__} has no merging unit clock: 0.9.22 or later")
 
             self._runner = open61850_rt.Engine(
                 self.iface, self.rate, self.asdus_per_frame, _native_streams(self.streams, templates, self.rate),
                 start, self.rt_priority, self.cpu,
             )
+            for st in clock_states:
+                self._runner.set_clock(*_native_clock_state(st))
         else:
-            self._runner = _PythonEngine(self.iface, self.rate, self.asdus_per_frame, self.streams, templates, start)
+            self._runner = _PythonEngine(self.iface, self.rate, self.asdus_per_frame, self.streams, templates, start,
+                                         self.clock)
         self._runner.start()
 
     def stop(self) -> None:
@@ -675,6 +807,12 @@ class Publisher:
         else:
             trajectory.push(t_ns, phasors)
 
+    def set_clock(self, state: ClockState) -> None:
+        """Add a state to the merging unit's clock (:class:`Clock`), before :meth:`start` or while running."""
+        self.clock.set(state)
+        if self._runner is not None and self.engine_name == "native":
+            self._runner.set_clock(*_native_clock_state(state))
+
     def stats(self) -> PublisherStats:
         if self._runner is None:
             return PublisherStats(engine=self.engine_name)
@@ -692,6 +830,11 @@ def _resolve_playback(stream: SvStream, start: int) -> SvStream:
     if stream.playback is None or stream.playback.start_second is not None:
         return stream
     return dataclasses.replace(stream, playback=dataclasses.replace(stream.playback, start_second=start))
+
+
+def _native_clock_state(st: ClockState) -> tuple[int, int, float, int]:
+    """A clock state as the native engine takes it (smpSynch -1: each stream's own)."""
+    return st.at_ns, st.offset_ns, st.drift_ppb, -1 if st.smp_synch is None else st.smp_synch
 
 
 def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], rate: int) -> list[dict[str, Any]]:
@@ -727,6 +870,7 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
         out.append({
             "frame": template.frame,
             "smp_cnt_offsets": list(template.smp_cnt_offsets),
+            "smp_synch_offsets": list(template.smp_synch_offsets),
             "sample_offsets": list(template.sample_offsets),
             "waves": waves(stream.waves),
             "fault": fault,
@@ -736,12 +880,40 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
     return out
 
 
+def _clock_start(clock: Clock, start_second: int, rate: int) -> tuple[ClockState, int]:
+    """The clock's state at the start and the number of the first sample sent."""
+    start_ns = start_second * _NS
+    state = TRUE_TIME
+    while (nxt := clock.next_after(state)) is not None and nxt.at_ns <= start_ns:
+        state = nxt
+    return state, state.label_at(start_ns, rate)
+
+
+def _clock_next(clock: Clock, state: ClockState, n: int, rate: int) -> tuple[ClockState, int, int, int]:
+    """For the frame of sample number ``n``: the clock state, the sample number, its shift and its send time.
+
+    The state changes when the frame's true time reaches the next state's
+    ``at_ns``: the frame then starts at the first sample taken under it.
+    The native engine does the same operations (``Clock`` in native/src/lib.rs).
+    """
+    label = _label_ns(n, rate)
+    shift = state.offset_at_label(label)
+    while (nxt := clock.next_after(state)) is not None and label - shift >= nxt.at_ns:
+        state = nxt
+        n = state.label_at(state.at_ns, rate)
+        label = _label_ns(n, rate)
+        shift = state.offset_at_label(label)
+    return state, n, shift, label - shift
+
+
 class _PythonEngine:
     def __init__(
-        self, iface: str, rate: int, asdus: int, streams: Sequence[SvStream], templates: Sequence[Template], start: int
+        self, iface: str, rate: int, asdus: int, streams: Sequence[SvStream], templates: Sequence[Template], start: int,
+        clock: Optional[Clock] = None,
     ) -> None:
         self.iface, self.rate, self.asdus = iface, rate, asdus
         self.streams, self.templates, self.start_second = list(streams), list(templates), start
+        self.clock = clock if clock is not None else Clock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._stats = {"frames_sent": 0, "send_errors": 0, "late_frames": 0, "max_lateness_ns": 0}
@@ -766,14 +938,13 @@ class _PythonEngine:
 
     def _run(self, sock: socket.socket) -> None:
         period_ns = 1_000_000_000 * self.asdus // self.rate
-        frames_per_second = self.rate // self.asdus
-        # Each deadline is computed from the second, so rounding never accumulates.
-        k = 0
+        rate = self.rate
+        # Each deadline is computed from the sample number, so rounding never accumulates.
+        state, n = _clock_start(self.clock, self.start_second, rate)
         with sock:
             while not self._stop.is_set():
-                second, index = divmod(k, frames_per_second)
-                second += self.start_second
-                target = second * 1_000_000_000 + index * self.asdus * 1_000_000_000 // self.rate
+                state, n, shift, target = _clock_next(self.clock, state, n, rate)
+                second, first = divmod(n, rate)
                 delay = target - time.time_ns()
                 if delay > 0:
                     if self._stop.wait(delay / 1e9):
@@ -782,7 +953,7 @@ class _PythonEngine:
                 sent = errors = 0
                 for stream, template in zip(self.streams, self.templates):
                     try:
-                        sock.send(render_frame(template, stream, second, index * self.asdus, self.rate))
+                        sock.send(render_frame(template, stream, second, first, rate, shift, state.smp_synch))
                         sent += 1
                     except OSError:
                         errors += 1
@@ -793,7 +964,7 @@ class _PythonEngine:
                     s["max_lateness_ns"] = max(s["max_lateness_ns"], lateness)
                     if lateness > period_ns:
                         s["late_frames"] += sent
-                k += 1
+                n += self.asdus
 
 
 # --- command line ------------------------------------------------------------

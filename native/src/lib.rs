@@ -42,11 +42,13 @@ struct Wave {
 }
 
 impl Wave {
-    fn value(&self, second: i64, smp: i64, rate: i64) -> i32 {
+    /// `shift`: the sample is taken that much (ns) before its label's time (`Wave.value`).
+    fn value(&self, second: i64, smp: i64, rate: i64, shift: i64) -> i32 {
         let x = if self.freq_hz == 0.0 || self.amplitude == 0.0 {
             self.offset
         } else {
-            let cycles = (self.freq_hz * second as f64) % 1.0 + self.freq_hz * smp as f64 / rate as f64;
+            let cycles = (self.freq_hz * second as f64) % 1.0 + self.freq_hz * smp as f64 / rate as f64
+                - self.freq_hz * shift as f64 / 1e9;
             self.offset + self.amplitude * (2.0 * PI * cycles + self.phase_deg.to_radians()).sin()
         };
         let v = (x * self.scale).round_ties_even();
@@ -118,8 +120,17 @@ fn wrap(angle: f64) -> f64 {
 impl Trajectory {
     /// (magnitude, total angle) per channel at this sample, `None` before the first point;
     /// `underrun` is set past the last point. The operations are `Trajectory.values`'s.
-    fn values(&self, second: i64, smp: i64, rate: i64, out: &mut Vec<(f64, f64)>, underrun: &mut bool) -> bool {
-        let key = second as i128 * NS_PER_S as i128 * rate as i128 + smp as i128 * NS_PER_S as i128;
+    fn values(
+        &self,
+        second: i64,
+        smp: i64,
+        rate: i64,
+        shift: i64,
+        out: &mut Vec<(f64, f64)>,
+        underrun: &mut bool,
+    ) -> bool {
+        let key = second as i128 * NS_PER_S as i128 * rate as i128 + smp as i128 * NS_PER_S as i128
+            - shift as i128 * rate as i128;
         let at_or_before = |t: i64| (t as i128) * (rate as i128) <= key;
         out.clear();
         let mut pts = self.points.lock().unwrap();
@@ -129,7 +140,7 @@ impl Trajectory {
         if pts.is_empty() || !at_or_before(pts[0].0) {
             return false;
         }
-        let since = |t: i64| (second * NS_PER_S - t) as f64 + smp as f64 * 1e9 / rate as f64;
+        let since = |t: i64| (second * NS_PER_S - t - shift) as f64 + smp as f64 * 1e9 / rate as f64;
         if pts.len() >= 2 && !at_or_before(pts[1].0) {
             let (ta, a) = &pts[0];
             let (tb, b) = &pts[1];
@@ -147,7 +158,8 @@ impl Trajectory {
             }
         }
         drop(pts);
-        let cycles = (self.f0 * second as f64) % 1.0 + self.f0 * smp as f64 / rate as f64;
+        let cycles =
+            (self.f0 * second as f64) % 1.0 + self.f0 * smp as f64 / rate as f64 - self.f0 * shift as f64 / 1e9;
         for v in out.iter_mut() {
             v.1 += 2.0 * PI * cycles;
         }
@@ -172,6 +184,7 @@ struct Stream {
     frame: Vec<u8>,
     smp_offsets: Vec<usize>,
     sample_offsets: Vec<usize>,
+    smp_synch_offsets: Vec<usize>,
     waves: Vec<Wave>,
     fault: Option<Fault>,
     playback: Option<Playback>,
@@ -180,7 +193,8 @@ struct Stream {
 
 impl Stream {
     /// Fills the frame; returns the samples sent past the trajectory's last point.
-    fn render(&self, buf: &mut [u8], second: i64, first_smp: i64, rate: i64) -> u64 {
+    /// `shift` and `synch` (-1: the template's) come from the clock (`render_frame`).
+    fn render(&self, buf: &mut [u8], second: i64, first_smp: i64, rate: i64, shift: i64, synch: i32) -> u64 {
         let mut underruns = 0;
         let mut phasors: Vec<(f64, f64)> = Vec::new();
         for (i, (&smp_at, &sample_at)) in self.smp_offsets.iter().zip(&self.sample_offsets).enumerate() {
@@ -188,7 +202,8 @@ impl Stream {
             let sec = second + n.div_euclid(rate);
             let smp = n.rem_euclid(rate);
             buf[smp_at..smp_at + 2].copy_from_slice(&(smp as u16).to_be_bytes());
-            if let Some((p, row)) = self.playback.as_ref().and_then(|p| p.index(sec, smp, rate).map(|r| (p, r))) {
+            let (tsec, tsmp) = true_sample(sec, smp, rate, shift);
+            if let Some((p, row)) = self.playback.as_ref().and_then(|p| p.index(tsec, tsmp, rate).map(|r| (p, r))) {
                 for ch in 0..p.channels {
                     let at = sample_at + 8 * ch;
                     let quality = match &p.qualities {
@@ -202,7 +217,7 @@ impl Stream {
             }
             if let Some(t) = &self.trajectory {
                 let mut underrun = false;
-                if t.values(sec, smp, rate, &mut phasors, &mut underrun) {
+                if t.values(sec, smp, rate, shift, &mut phasors, &mut underrun) {
                     underruns += underrun as u64;
                     for (ch, (&(m, angle), w)) in phasors.iter().zip(&self.waves).enumerate() {
                         let at = sample_at + 8 * ch;
@@ -215,16 +230,119 @@ impl Stream {
                 }
             }
             let waves = match &self.fault {
-                Some(f) if f.active(sec, smp, rate) => &f.waves,
+                Some(f) if f.active(tsec, tsmp, rate) => &f.waves,
                 _ => &self.waves,
             };
             for (ch, w) in waves.iter().enumerate() {
                 let at = sample_at + 8 * ch;
-                buf[at..at + 4].copy_from_slice(&w.value(sec, smp, rate).to_be_bytes());
+                buf[at..at + 4].copy_from_slice(&w.value(sec, smp, rate, shift).to_be_bytes());
                 buf[at + 4..at + 8].copy_from_slice(&w.quality.to_be_bytes());
             }
         }
+        if synch >= 0 {
+            for &at in &self.smp_synch_offsets {
+                buf[at] = synch as u8;
+            }
+        }
         underruns
+    }
+}
+
+/// The (second, smpCnt) of the true sample grid nearest the time a shifted sample is taken (`_true_sample`).
+fn true_sample(second: i64, smp: i64, rate: i64, shift: i64) -> (i64, i64) {
+    if shift == 0 {
+        return (second, smp);
+    }
+    let back = ((shift as i128 * rate as i128 + (NS_PER_S / 2) as i128).div_euclid(NS_PER_S as i128)) as i64;
+    let n = second * rate + smp - back;
+    (n.div_euclid(rate), n.rem_euclid(rate))
+}
+
+/// A merging unit's clock state (`open61850.sv_publisher.ClockState`); `synch` -1 keeps each stream's own.
+#[derive(Clone, Copy)]
+struct ClockState {
+    at: i64,
+    offset: i64,
+    drift_ppb: f64,
+    synch: i32,
+}
+
+const TRUE_TIME: ClockState = ClockState { at: -(1 << 62), offset: 0, drift_ppb: 0.0, synch: -1 };
+
+impl ClockState {
+    fn offset_at_label(&self, label: i64) -> i64 {
+        if self.drift_ppb == 0.0 {
+            return self.offset;
+        }
+        let d = self.drift_ppb * 1e-9;
+        self.offset + (d * (label - self.offset - self.at) as f64 / (1.0 + d)).round_ties_even() as i64
+    }
+
+    fn offset_at(&self, t: i64) -> i64 {
+        if self.drift_ppb == 0.0 {
+            return self.offset;
+        }
+        self.offset + (self.drift_ppb * 1e-9 * (t - self.at) as f64).round_ties_even() as i64
+    }
+
+    fn label_at(&self, t: i64, rate: i64) -> i64 {
+        let x = (t + self.offset_at(t)) as i128 * rate as i128;
+        -((-x).div_euclid(NS_PER_S as i128)) as i64
+    }
+}
+
+/// UNIX nanoseconds of sample number `n` (`_label_ns`).
+fn label_ns(n: i64, rate: i64) -> i64 {
+    n.div_euclid(rate) * NS_PER_S + n.rem_euclid(rate) * NS_PER_S / rate
+}
+
+/// The clock's states, in increasing `at` (`open61850.sv_publisher.Clock`).
+#[derive(Default)]
+struct Clock {
+    states: Mutex<Vec<ClockState>>,
+}
+
+impl Clock {
+    fn set(&self, state: ClockState) -> PyResult<()> {
+        if !(-1..=255).contains(&state.synch) {
+            return Err(PyValueError::new_err("smp_synch must be an octet"));
+        }
+        if !(state.drift_ppb > -1e8 && state.drift_ppb < 1e8) {
+            return Err(PyValueError::new_err("drift_ppb must be under 10 % in size"));
+        }
+        let mut states = self.states.lock().unwrap();
+        if states.last().is_some_and(|s| state.at <= s.at) {
+            return Err(PyValueError::new_err("clock states must come in increasing time"));
+        }
+        states.push(state);
+        Ok(())
+    }
+
+    fn next_after(&self, current: &ClockState) -> Option<ClockState> {
+        self.states.lock().unwrap().iter().find(|s| s.at > current.at).copied()
+    }
+
+    /// The state at the start and the first sample number (`_clock_start`).
+    fn start(&self, start_second: i64, rate: i64) -> (ClockState, i64) {
+        let start = start_second * NS_PER_S;
+        let mut state = TRUE_TIME;
+        while let Some(next) = self.next_after(&state).filter(|n| n.at <= start) {
+            state = next;
+        }
+        (state, state.label_at(start, rate))
+    }
+
+    /// The frame of sample number `n`: state, sample number, shift, send time (`_clock_next`).
+    fn next(&self, mut state: ClockState, mut n: i64, rate: i64) -> (ClockState, i64, i64, i64) {
+        let mut label = label_ns(n, rate);
+        let mut shift = state.offset_at_label(label);
+        while let Some(next) = self.next_after(&state).filter(|s| label - shift >= s.at) {
+            state = next;
+            n = state.label_at(state.at, rate);
+            label = label_ns(n, rate);
+            shift = state.offset_at_label(label);
+        }
+        (state, n, shift, label - shift)
     }
 }
 
@@ -246,6 +364,7 @@ struct Config {
     start_second: i64,
     rt_priority: Option<i32>,
     cpu: Option<usize>,
+    clock: Clock,
 }
 
 /// The engine behind `open61850.sv.Publisher(engine="native")`.
@@ -282,6 +401,10 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
     let d = obj.cast::<PyDict>()?;
     let frame: Vec<u8> = item(d, "frame")?.extract()?;
     let smp_offsets: Vec<usize> = item(d, "smp_cnt_offsets")?.extract()?;
+    let smp_synch_offsets: Vec<usize> = match d.get_item("smp_synch_offsets")? {
+        Some(obj) if !obj.is_none() => obj.extract()?,
+        _ => Vec::new(),
+    };
     let sample_offsets: Vec<usize> = item(d, "sample_offsets")?.extract()?;
     let waves = waves_from(&item(d, "waves")?)?;
     let fault_obj = item(d, "fault")?;
@@ -313,6 +436,9 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
             return Err(PyValueError::new_err("offset outside the frame"));
         }
     }
+    if smp_synch_offsets.iter().any(|&o| o >= frame.len()) {
+        return Err(PyValueError::new_err("offset outside the frame"));
+    }
     if playback.as_ref().is_some_and(|p| p.channels != channels) {
         return Err(PyValueError::new_err("the playback must have as many channels as the stream"));
     }
@@ -328,7 +454,7 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
         }
         _ => None,
     };
-    Ok(Stream { frame, smp_offsets, sample_offsets, waves, fault, playback, trajectory })
+    Ok(Stream { frame, smp_offsets, sample_offsets, smp_synch_offsets, waves, fault, playback, trajectory })
 }
 
 fn ints<T>(bytes: &[u8], convert: fn([u8; 4]) -> T) -> PyResult<Vec<T>> {
@@ -381,17 +507,37 @@ impl Engine {
             return Err(PyValueError::new_err("every template must carry asdus_per_frame ASDUs"));
         }
         Ok(Engine {
-            config: Arc::new(Config { iface, rate, asdus: asdus_per_frame, streams, start_second, rt_priority, cpu }),
+            config: Arc::new(Config {
+                iface,
+                rate,
+                asdus: asdus_per_frame,
+                streams,
+                start_second,
+                rt_priority,
+                cpu,
+                clock: Clock::default(),
+            }),
             counters: Arc::new(Counters::default()),
             thread: Mutex::new(None),
         })
     }
 
-    /// Frame of stream `stream` carrying samples `first_smp`... of UNIX second `second` (for tests).
-    fn render<'py>(&self, py: Python<'py>, stream: usize, second: i64, first_smp: i64) -> PyResult<Bound<'py, PyBytes>> {
+    /// Frame of stream `stream` carrying samples `first_smp`... of UNIX second `second` (for tests);
+    /// `shift_ns` and `smp_synch` as `render_frame`'s.
+    #[pyo3(signature = (stream, second, first_smp, shift_ns=0, smp_synch=None))]
+    fn render<'py>(
+        &self,
+        py: Python<'py>,
+        stream: usize,
+        second: i64,
+        first_smp: i64,
+        shift_ns: i64,
+        smp_synch: Option<u8>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         let s = self.config.streams.get(stream).ok_or_else(|| PyValueError::new_err("no such stream"))?;
         let mut buf = s.frame.clone();
-        let underruns = s.render(&mut buf, second, first_smp, self.config.rate);
+        let synch = smp_synch.map_or(-1, i32::from);
+        let underruns = s.render(&mut buf, second, first_smp, self.config.rate, shift_ns, synch);
         self.counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
         Ok(PyBytes::new(py, &buf))
     }
@@ -401,6 +547,21 @@ impl Engine {
         let s = self.config.streams.get(stream).ok_or_else(|| PyValueError::new_err("no such stream"))?;
         let t = s.trajectory.as_ref().ok_or_else(|| PyValueError::new_err("the stream has no trajectory"))?;
         t.push(t_ns, phasors)
+    }
+
+    /// Adds a state to the merging unit's clock: true UNIX ns from which it holds, offset (ns),
+    /// drift (ppb), smpSynch (-1: each stream's own). States come in increasing time.
+    fn set_clock(&self, at_ns: i64, offset_ns: i64, drift_ppb: f64, smp_synch: i32) -> PyResult<()> {
+        self.config.clock.set(ClockState { at: at_ns, offset: offset_ns, drift_ppb, synch: smp_synch })
+    }
+
+    /// The frame of sample number `n` under clock state (at, offset, drift, synch), as the engine
+    /// computes it: (state's at, sample number, shift, send time). For tests.
+    fn clock_next(&self, state: (i64, i64, f64, i32), n: i64) -> (i64, i64, i64, i64) {
+        let (at, offset, drift_ppb, synch) = state;
+        let current = if at == TRUE_TIME.at { TRUE_TIME } else { ClockState { at, offset, drift_ppb, synch } };
+        let (st, n, shift, t) = self.config.clock.next(current, n, self.config.rate);
+        (st.at, n, shift, t)
     }
 
     /// Open the socket, then send from a thread of its own until `stop()`.
@@ -541,7 +702,6 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
 
     let rate = config.rate;
     let asdus = config.asdus;
-    let frames_per_second = rate / asdus;
     let mut buffers: Vec<Vec<u8>> = config.streams.iter().map(|s| s.frame.clone()).collect();
     let mut iovecs: Vec<libc::iovec> = buffers
         .iter_mut()
@@ -555,15 +715,16 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
     }
     let period_ns = NS_PER_S * asdus / rate;
 
-    let mut k: i64 = 0;
+    // Each deadline is computed from the sample number, so rounding never accumulates.
+    let (mut state, mut n) = config.clock.start(config.start_second, rate);
     while !counters.stop.load(Ordering::Relaxed) {
-        let second = config.start_second + k / frames_per_second;
-        let index = k % frames_per_second;
-        let target = second * NS_PER_S + index * asdus * NS_PER_S / rate;
+        let (st, first, shift, target) = config.clock.next(state, n, rate);
+        state = st;
+        n = first;
         // Fill before sleeping: the frame is ready when its time comes.
         let mut underruns = 0;
         for (stream, buf) in config.streams.iter().zip(buffers.iter_mut()) {
-            underruns += stream.render(buf, second, index * asdus, rate);
+            underruns += stream.render(buf, n.div_euclid(rate), n.rem_euclid(rate), rate, shift, state.synch);
         }
         if underruns > 0 {
             counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
@@ -585,7 +746,7 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
         if lateness > period_ns {
             counters.late_frames.fetch_add(sent as u64, Ordering::Relaxed);
         }
-        k += 1;
+        n += asdus;
     }
     // SAFETY: the socket belongs to this thread.
     unsafe { libc::close(fd) };
