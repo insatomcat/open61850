@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.20 (2026-11-10)
 
 - `Playback.from_array` builds a playback from flat rows (a list, an
   `array.array` or a NumPy array) and keeps them packed, four bytes a
