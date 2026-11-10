@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "open61850-core"
-version = "0.9.22"
+version = "0.9.23"
 
 [[package]]
 name = "open61850-fuzz"

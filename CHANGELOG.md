@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.23 (2026-11-10)
 
 - open61850-rt sends each stream's own smpSynch again after a clock
   state that replaced it ends (`ClockState(smp_synch=None)`): 0.9.22's
