@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.19 (2026-11-10)
 
 - SV streams can follow a trajectory of phasors pushed while they run
   (`Trajectory`, `Publisher.push`): each point gives a time and a peak
