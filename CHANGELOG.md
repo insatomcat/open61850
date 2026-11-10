@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.21 (2026-11-10)
 
 - `open61850.sv_receiver.Receiver` receives a few SV streams of a busy
   process bus and hands over each one's samples as fixed-size records
