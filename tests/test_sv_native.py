@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 import sys
 import time
@@ -17,6 +18,7 @@ from open61850.sv_publisher import (
     Playback,
     Publisher,
     SvStream,
+    Trajectory,
     Wave,
     _native_streams,
     build_template,
@@ -65,6 +67,61 @@ def test_native_render_matches_python(seed: int) -> None:
         first = rng.randrange(0, rate, asdus)
         i = rng.randrange(len(streams))
         assert engine.render(i, second, first) == render_frame(templates[i], streams[i], second, first, rate)
+
+
+def _trajectory_points(rng: random.Random, channels: int, base: int) -> list[tuple[int, list[tuple[float, float]]]]:
+    t, points = base * 1_000_000_000 + rng.randint(-10**9, 10**9), []
+    for _ in range(rng.randint(1, 120)):
+        points.append((t, [(rng.uniform(0, 3e5), rng.uniform(-50, 50)) for _ in range(channels)]))
+        t += rng.choice([20_000_000, 10_000_000, 1, 33_333_333, rng.randint(1, 10**8)])
+    return points
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_native_trajectory_matches_python(seed: int) -> None:
+    rng = random.Random(1000 + seed)
+    rate, asdus = rng.choice([(4800, 2), (4000, 1), (14400, 6)])
+    base = rng.choice(BASES)
+    streams, pushed = [], []
+    for _ in range(3):
+        channels = rng.choice([8, 3, 1])
+        waves = tuple(Wave(rng.uniform(0, 100), 0, 50.0, 0, rng.choice([1, 100, 1000]), rng.choice([0, 0x2000]))
+                      for _ in range(channels))
+        points = _trajectory_points(rng, channels, base)
+        early = rng.randint(0, len(points))  # some points before the engine is made, the others pushed
+        t = Trajectory(channels, f0=rng.choice([50.0, 60.0]))
+        for p in points[:early]:
+            t.push(*p)
+        streams.append(SvStream("SV", 1, "01:0c:cd:04:00:01", "02:00:00:00:00:01", waves, trajectory=t))
+        pushed.append(points[early:])
+    templates = [build_template(s, asdus, rate) for s in streams]
+    engine = rt.Engine("lo", rate, asdus, _native_streams(streams, templates, rate), 0)
+    for i, points in enumerate(pushed):
+        for t_ns, p in points:
+            engine.push(i, t_ns, p)
+            streams[i].trajectory.push(t_ns, p)  # type: ignore[union-attr]
+    # in increasing time, the way the engine sends: from before the first point to past the last
+    k = (base - 2) * (rate // asdus)
+    for _ in range(400):
+        k += rng.choice([1, 1, 3, 40, 500])
+        second, index = divmod(k, rate // asdus)
+        for i in range(len(streams)):
+            assert engine.render(i, second, index * asdus) == render_frame(templates[i], streams[i], second,
+                                                                           index * asdus, rate)
+    python_underruns = sum(s.trajectory.underruns for s in streams)  # type: ignore[union-attr]
+    assert engine.stats()["trajectory_underruns"] == python_underruns
+
+
+def test_native_trajectory_checks() -> None:
+    stream = SvStream("SV", 1, "01:0c:cd:04:00:01", "02:00:00:00:00:01", (Wave(scale=1),), trajectory=Trajectory(1))
+    engine = rt.Engine("lo", 4800, 2, _native_streams([stream], [build_template(stream, 2, 4800)], 4800), 0)
+    engine.push(0, 5, [(1.0, 0.0)])
+    with pytest.raises(ValueError):
+        engine.push(0, 5, [(1.0, 0.0)])
+    with pytest.raises(ValueError):
+        engine.push(0, 6, [(1.0, 0.0), (1.0, 0.0)])
+    with pytest.raises(ValueError):
+        engine.push(1, 7, [(1.0, 0.0)])
 
 
 def test_native_rejects_bad_input() -> None:
@@ -153,3 +210,49 @@ def test_native_engine_plays_back_recorded_samples() -> None:
         second, smp = divmod(100 + n, rate)
         assert received[(start + second, smp)] == values[n]
     assert received[(start, 99)] != values[0]  # before the playback: the waves
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AF_PACKET is Linux only")
+def test_native_engine_follows_a_trajectory_pushed_while_it_runs() -> None:
+    from open61850.capture import PacketCapture
+
+    try:
+        cap = PacketCapture("lo", (0x88BA,), timeout=0.05, outgoing=False, buffer_bytes=16 << 20)
+    except PermissionError:
+        pytest.skip("needs CAP_NET_RAW")
+    rate = 4800
+    stream = SvStream("IED01_MU01_TR", 0x4000, "01:0c:cd:04:00:01", "02:00:00:00:00:01",
+                      (Wave(scale=100),), trajectory=Trajectory(1))
+    publisher = Publisher("lo", rate=rate, asdus_per_frame=2, engine="native")
+    publisher.add(stream)
+    start = int(time.time()) + 1
+    received: dict[tuple[int, int], int] = {}
+    # points 20 ms apart pushed 100 ms ahead of their time: a 0.5 Hz offset, 100 V peak; those of
+    # the first 100 ms before the start, the engine preparing its first frame as it starts
+    k = 0
+
+    def due(t_ns: int) -> bool:
+        return t_ns < max(time.time_ns(), start * 10**9) + 100_000_000
+
+    while due(start * 10**9 + k * 20_000_000):
+        publisher.push(0, start * 10**9 + k * 20_000_000, [(100.0, 2 * math.pi * 0.5 * k * 0.02)])
+        k += 1
+    with cap:
+        publisher.start(at_second=start)
+        while time.time() < start + 1.3:
+            t_ns = start * 10**9 + k * 20_000_000
+            if due(t_ns):
+                publisher.push(0, t_ns, [(100.0, 2 * math.pi * 0.5 * k * 0.02)])
+                k += 1
+            got = cap.recv()
+            if got is None:
+                continue
+            asdus = sv.decode_sv_frame(got.data)[1].asdus
+            second = round(got.timestamp - asdus[0].smp_cnt / rate)
+            for asdu in asdus:
+                received[(second, asdu.smp_cnt)] = sv.decode_int32_samples(asdu.sample)[0][0]
+        publisher.stop()
+    for smp in range(0, rate, 13):
+        x = smp / rate
+        assert abs(received[(start, smp)] / 100 - 100 * math.cos(2 * math.pi * 50.5 * x)) < 0.02
+    assert publisher.stats().trajectory_underruns == 0

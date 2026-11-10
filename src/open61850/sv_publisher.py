@@ -57,6 +57,7 @@ __all__ = [
     "Wave",
     "Fault",
     "Playback",
+    "Trajectory",
     "SvStream",
     "Template",
     "PublisherStats",
@@ -229,9 +230,104 @@ class Playback:
         return cls(rows, **kwargs)
 
 
+_TWO_PI = 2.0 * math.pi
+_NS = 1_000_000_000
+
+
+def _wrap(angle: float) -> float:
+    """``angle`` brought into [-pi, pi) (the native engine does the same operations)."""
+    return angle - _TWO_PI * math.floor(angle / _TWO_PI + 0.5)
+
+
+class Trajectory:
+    """Phasors given while the stream runs, sent as waveforms rebuilt from them.
+
+    Each channel sends ``magnitude(t) * cos(2 pi f0 t + angle(t))``, ``t``
+    being UNIX time, in engineering units (then ``scale`` and ``quality`` of
+    the stream's wave of that channel). ``magnitude`` is the peak value and
+    ``angle`` the angle in radians against a cosine at ``f0`` that peaks at
+    every whole UNIX second: with ``f0`` the nominal frequency, the
+    synchrophasor of IEC/IEEE 60255-118-1 is ``magnitude / sqrt(2)`` at
+    ``angle``, and a frequency off nominal is an angle that turns.
+
+    :meth:`push` adds a point (a time in UNIX nanoseconds, one
+    ``(magnitude, angle)`` per channel), times increasing. Between two
+    points the magnitude and the angle are interpolated linearly, the angle
+    by the shorter way round (a step under half a turn: under 25 Hz off
+    nominal for points 20 ms apart). Before the first point the stream
+    sends its waves. After the last point the magnitude is held and the
+    angle goes on turning at the speed of the last two points (held when
+    there is one): each sample sent so is counted as an underrun, the
+    points having come too late. Points behind the time sent are dropped.
+
+    The publisher pushes to the stream's trajectory before it starts and to
+    its engine after (:meth:`Publisher.push`). An engine fills each frame
+    one frame period before its time, the first one as it starts: the
+    points of the first frames are pushed before the start, the others at
+    least a frame period ahead, plus the pusher's own jitter.
+    """
+
+    def __init__(self, channels: int, f0: float = 50.0) -> None:
+        if channels < 1:
+            raise ValueError("a trajectory needs channels")
+        self.channels = channels
+        self.f0 = float(f0)
+        self.underruns = 0
+        self._points: collections.deque[tuple[int, tuple[tuple[float, float], ...]]] = collections.deque()
+        self._lock = threading.Lock()
+
+    def push(self, t_ns: int, phasors: Sequence[tuple[float, float]]) -> None:
+        point = tuple((float(m), float(a)) for m, a in phasors)
+        if len(point) != self.channels:
+            raise ValueError(f"a point needs {self.channels} phasors, not {len(point)}")
+        with self._lock:
+            if self._points and t_ns <= self._points[-1][0]:
+                raise ValueError("trajectory points must come in increasing time")
+            self._points.append((int(t_ns), point))
+
+    def points(self) -> list[tuple[int, tuple[tuple[float, float], ...]]]:
+        with self._lock:
+            return list(self._points)
+
+    def values(self, second: int, smp_cnt: int, rate: int) -> Optional[list[tuple[float, float]]]:
+        """The (magnitude, total angle) of each channel at this sample, ``None`` before the first point.
+
+        The total angle includes ``2 pi f0 t``. Called in increasing time
+        (it drops the points behind).
+        """
+        # Exact comparisons: point time t_p is at or before the sample when t_p * rate <= key.
+        key = second * _NS * rate + smp_cnt * _NS
+        with self._lock:
+            pts = self._points
+            while len(pts) >= 3 and pts[1][0] * rate <= key:
+                pts.popleft()
+            if not pts or pts[0][0] * rate > key:
+                return None
+            if len(pts) >= 2 and pts[1][0] * rate > key:
+                (ta, a), (tb, b) = pts[0], pts[1]
+                w = (float(second * _NS - ta) + smp_cnt * 1e9 / rate) / float(tb - ta)
+                out = [(ma + w * (mb - ma), pa + w * _wrap(pb - pa)) for (ma, pa), (mb, pb) in zip(a, b)]
+            else:
+                self.underruns += 1
+                ta, a = pts[-1]
+                if len(pts) >= 2:
+                    tp, p = pts[-2]
+                    w = (float(second * _NS - ta) + smp_cnt * 1e9 / rate) / float(ta - tp)
+                    out = [(ma, pa + w * _wrap(pa - pp)) for (ma, pa), (_mp, pp) in zip(a, p)]
+                else:
+                    out = list(a)
+        cycles = math.fmod(self.f0 * second, 1.0) + self.f0 * smp_cnt / rate
+        return [(m, _TWO_PI * cycles + angle) for m, angle in out]
+
+
 @dataclass
 class SvStream:
-    """One SV stream. ``waves`` gives the channels in data set order."""
+    """One SV stream. ``waves`` gives the channels in data set order.
+
+    ``trajectory``, when given, replaces the waves' values once its first
+    point is reached (the waves still give each channel's scale and
+    quality); a playback goes before it, and it before the fault.
+    """
 
     sv_id: str
     app_id: int
@@ -246,6 +342,11 @@ class SvStream:
     simulation: bool = False
     fault: Optional[Fault] = None
     playback: Optional[Playback] = None
+    trajectory: Optional[Trajectory] = None
+
+    def __post_init__(self) -> None:
+        if self.trajectory is not None and self.trajectory.channels != len(self.waves):
+            raise ValueError("the trajectory must have as many channels as the stream")
 
     def waves_at(self, second: int, smp_cnt: int, rate: int) -> Sequence[Wave]:
         if self.fault is not None and self.fault.active(second, smp_cnt, rate):
@@ -391,6 +492,10 @@ def _samples(stream: SvStream, second: int, smp_cnt: int, rate: int) -> list[tup
     if playback is not None and (row := playback.index(second, smp_cnt, rate)) is not None:
         qualities = playback.qualities[row] if playback.qualities is not None else [w.quality for w in stream.waves]
         return list(zip(playback.values[row], qualities))
+    if stream.trajectory is not None:
+        phasors = stream.trajectory.values(second, smp_cnt, rate)
+        if phasors is not None:
+            return [(_int32(round(m * math.cos(angle) * w.scale)), w.quality) for (m, angle), w in zip(phasors, stream.waves)]
     return [(w.value(second, smp_cnt, rate), w.quality) for w in stream.waves_at(second, smp_cnt, rate)]
 
 
@@ -424,6 +529,7 @@ class PublisherStats:
     send_errors: int = 0
     late_frames: int = 0  # sent more than one frame period after their time
     max_lateness_ns: int = 0
+    trajectory_underruns: int = 0  # samples sent past a trajectory's last point
     engine: str = ""
 
 
@@ -476,6 +582,8 @@ class Publisher:
             version = tuple(int(x) for x in open61850_rt.__version__.split(".")[:2])
             if version < (0, 4) and any(s.playback is not None for s in self.streams):
                 raise RuntimeError(f"open61850-rt {open61850_rt.__version__} cannot play back samples: 0.4 or later")
+            if not hasattr(open61850_rt.Engine, "push") and any(s.trajectory is not None for s in self.streams):
+                raise RuntimeError(f"open61850-rt {open61850_rt.__version__} cannot follow a trajectory: 0.9.19 or later")
 
             self._runner = open61850_rt.Engine(
                 self.iface, self.rate, self.asdus_per_frame, _native_streams(self.streams, templates, self.rate),
@@ -488,6 +596,22 @@ class Publisher:
     def stop(self) -> None:
         if self._runner is not None:
             self._runner.stop()
+
+    def push(self, stream: int, t_ns: int, phasors: Sequence[tuple[float, float]]) -> None:
+        """Add a point to the trajectory of stream number ``stream`` (see :class:`Trajectory`).
+
+        Before :meth:`start` the point goes to the stream's trajectory, after
+        it to the engine that sends it.
+        """
+        trajectory = self.streams[stream].trajectory
+        if trajectory is None:
+            raise ValueError(f"stream {stream} has no trajectory")
+        if self._runner is not None and self.engine_name == "native":
+            if len(phasors) != trajectory.channels:
+                raise ValueError(f"a point needs {trajectory.channels} phasors, not {len(phasors)}")
+            self._runner.push(stream, int(t_ns), [(float(m), float(a)) for m, a in phasors])
+        else:
+            trajectory.push(t_ns, phasors)
 
     def stats(self) -> PublisherStats:
         if self._runner is None:
@@ -533,6 +657,9 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
                 "start": pb.start_second * rate + pb.start_smp,
                 "period": None if pb.repeat_s is None else pb.repeat_s * rate,
             }
+        trajectory = None
+        if stream.trajectory is not None:
+            trajectory = {"f0": stream.trajectory.f0, "points": [(t, list(p)) for t, p in stream.trajectory.points()]}
         out.append({
             "frame": template.frame,
             "smp_cnt_offsets": list(template.smp_cnt_offsets),
@@ -540,6 +667,7 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
             "waves": waves(stream.waves),
             "fault": fault,
             "playback": playback,
+            "trajectory": trajectory,
         })
     return out
 
@@ -568,7 +696,9 @@ class _PythonEngine:
 
     def stats(self) -> dict[str, int]:
         with self._lock:
-            return dict(self._stats)
+            stats = dict(self._stats)
+        stats["trajectory_underruns"] = sum(s.trajectory.underruns for s in self.streams if s.trajectory is not None)
+        return stats
 
     def _run(self, sock: socket.socket) -> None:
         period_ns = 1_000_000_000 * self.asdus // self.rate

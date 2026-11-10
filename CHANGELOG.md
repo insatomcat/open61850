@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- SV streams can follow a trajectory of phasors pushed while they run
+  (`Trajectory`, `Publisher.push`): each point gives a time and a peak
+  magnitude and angle per channel, the angle against a cosine at the
+  nominal frequency peaking on every UNIX second (the synchrophasor a
+  PMU should measure); both engines interpolate between points and
+  count the samples sent past the last one
+  (`stats().trajectory_underruns`). Made for a phasor-domain network
+  simulator played live to PMUs (vpac-wams).
+
 ## 0.9.18 (2026-11-07)
 
 - The strict GOOSE decoders, Python's and libopen61850's, refuse an

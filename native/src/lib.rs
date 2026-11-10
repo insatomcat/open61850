@@ -11,6 +11,7 @@
 //! floating-point operations in the same order, ties rounded to even), so
 //! both produce the same bytes.
 
+use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -97,6 +98,73 @@ impl Playback {
     }
 }
 
+/// A trajectory point: UNIX nanoseconds, then (magnitude, angle) per channel.
+type Point = (i64, Vec<(f64, f64)>);
+
+/// Phasors pushed while the engine runs (`open61850.sv_publisher.Trajectory`).
+struct Trajectory {
+    f0: f64,
+    channels: usize,
+    points: Mutex<VecDeque<Point>>,
+}
+
+/// The angle brought into [-pi, pi), as `sv_publisher._wrap`.
+fn wrap(angle: f64) -> f64 {
+    angle - 2.0 * PI * (angle / (2.0 * PI) + 0.5).floor()
+}
+
+impl Trajectory {
+    /// (magnitude, total angle) per channel at this sample, `None` before the first point;
+    /// `underrun` is set past the last point. The operations are `Trajectory.values`'s.
+    fn values(&self, second: i64, smp: i64, rate: i64, out: &mut Vec<(f64, f64)>, underrun: &mut bool) -> bool {
+        let key = second as i128 * NS_PER_S as i128 * rate as i128 + smp as i128 * NS_PER_S as i128;
+        let at_or_before = |t: i64| (t as i128) * (rate as i128) <= key;
+        out.clear();
+        let mut pts = self.points.lock().unwrap();
+        while pts.len() >= 3 && at_or_before(pts[1].0) {
+            pts.pop_front();
+        }
+        if pts.is_empty() || !at_or_before(pts[0].0) {
+            return false;
+        }
+        let since = |t: i64| (second * NS_PER_S - t) as f64 + smp as f64 * 1e9 / rate as f64;
+        if pts.len() >= 2 && !at_or_before(pts[1].0) {
+            let (ta, a) = &pts[0];
+            let (tb, b) = &pts[1];
+            let w = since(*ta) / (tb - ta) as f64;
+            out.extend(a.iter().zip(b).map(|(&(ma, pa), &(mb, pb))| (ma + w * (mb - ma), pa + w * wrap(pb - pa))));
+        } else {
+            *underrun = true;
+            let (ta, a) = &pts[pts.len() - 1];
+            if pts.len() >= 2 {
+                let (tp, p) = &pts[pts.len() - 2];
+                let w = since(*ta) / (ta - tp) as f64;
+                out.extend(a.iter().zip(p).map(|(&(ma, pa), &(_mp, pp))| (ma, pa + w * wrap(pa - pp))));
+            } else {
+                out.extend(a.iter().copied());
+            }
+        }
+        drop(pts);
+        let cycles = (self.f0 * second as f64) % 1.0 + self.f0 * smp as f64 / rate as f64;
+        for v in out.iter_mut() {
+            v.1 += 2.0 * PI * cycles;
+        }
+        true
+    }
+
+    fn push(&self, t_ns: i64, point: Vec<(f64, f64)>) -> PyResult<()> {
+        if point.len() != self.channels {
+            return Err(PyValueError::new_err(format!("a point needs {} phasors, not {}", self.channels, point.len())));
+        }
+        let mut pts = self.points.lock().unwrap();
+        if pts.back().is_some_and(|(t, _)| t_ns <= *t) {
+            return Err(PyValueError::new_err("trajectory points must come in increasing time"));
+        }
+        pts.push_back((t_ns, point));
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct Stream {
     frame: Vec<u8>,
@@ -105,10 +173,14 @@ struct Stream {
     waves: Vec<Wave>,
     fault: Option<Fault>,
     playback: Option<Playback>,
+    trajectory: Option<Arc<Trajectory>>,
 }
 
 impl Stream {
-    fn render(&self, buf: &mut [u8], second: i64, first_smp: i64, rate: i64) {
+    /// Fills the frame; returns the samples sent past the trajectory's last point.
+    fn render(&self, buf: &mut [u8], second: i64, first_smp: i64, rate: i64) -> u64 {
+        let mut underruns = 0;
+        let mut phasors: Vec<(f64, f64)> = Vec::new();
         for (i, (&smp_at, &sample_at)) in self.smp_offsets.iter().zip(&self.sample_offsets).enumerate() {
             let n = first_smp + i as i64;
             let sec = second + n.div_euclid(rate);
@@ -126,6 +198,20 @@ impl Stream {
                 }
                 continue;
             }
+            if let Some(t) = &self.trajectory {
+                let mut underrun = false;
+                if t.values(sec, smp, rate, &mut phasors, &mut underrun) {
+                    underruns += underrun as u64;
+                    for (ch, (&(m, angle), w)) in phasors.iter().zip(&self.waves).enumerate() {
+                        let at = sample_at + 8 * ch;
+                        let v = (m * angle.cos() * w.scale).round_ties_even();
+                        let v = v.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+                        buf[at..at + 4].copy_from_slice(&v.to_be_bytes());
+                        buf[at + 4..at + 8].copy_from_slice(&w.quality.to_be_bytes());
+                    }
+                    continue;
+                }
+            }
             let waves = match &self.fault {
                 Some(f) if f.active(sec, smp, rate) => &f.waves,
                 _ => &self.waves,
@@ -136,6 +222,7 @@ impl Stream {
                 buf[at + 4..at + 8].copy_from_slice(&w.quality.to_be_bytes());
             }
         }
+        underruns
     }
 }
 
@@ -146,6 +233,7 @@ struct Counters {
     send_errors: AtomicU64,
     late_frames: AtomicU64,
     max_lateness_ns: AtomicI64,
+    trajectory_underruns: AtomicU64,
 }
 
 struct Config {
@@ -226,7 +314,19 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
     if playback.as_ref().is_some_and(|p| p.channels != channels) {
         return Err(PyValueError::new_err("the playback must have as many channels as the stream"));
     }
-    Ok(Stream { frame, smp_offsets, sample_offsets, waves, fault, playback })
+    let trajectory = match d.get_item("trajectory")? {
+        Some(obj) if !obj.is_none() => {
+            let t = obj.cast::<PyDict>()?;
+            let traj = Trajectory { f0: item(t, "f0")?.extract()?, channels, points: Mutex::new(VecDeque::new()) };
+            let points: Vec<Point> = item(t, "points")?.extract()?;
+            for (t_ns, point) in points {
+                traj.push(t_ns, point)?;
+            }
+            Some(Arc::new(traj))
+        }
+        _ => None,
+    };
+    Ok(Stream { frame, smp_offsets, sample_offsets, waves, fault, playback, trajectory })
 }
 
 fn ints<T>(bytes: &[u8], convert: fn([u8; 4]) -> T) -> PyResult<Vec<T>> {
@@ -289,8 +389,16 @@ impl Engine {
     fn render<'py>(&self, py: Python<'py>, stream: usize, second: i64, first_smp: i64) -> PyResult<Bound<'py, PyBytes>> {
         let s = self.config.streams.get(stream).ok_or_else(|| PyValueError::new_err("no such stream"))?;
         let mut buf = s.frame.clone();
-        s.render(&mut buf, second, first_smp, self.config.rate);
+        let underruns = s.render(&mut buf, second, first_smp, self.config.rate);
+        self.counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
         Ok(PyBytes::new(py, &buf))
+    }
+
+    /// Adds a point to the trajectory of stream `stream`: UNIX nanoseconds, one (magnitude, angle) per channel.
+    fn push(&self, stream: usize, t_ns: i64, phasors: Vec<(f64, f64)>) -> PyResult<()> {
+        let s = self.config.streams.get(stream).ok_or_else(|| PyValueError::new_err("no such stream"))?;
+        let t = s.trajectory.as_ref().ok_or_else(|| PyValueError::new_err("the stream has no trajectory"))?;
+        t.push(t_ns, phasors)
     }
 
     /// Open the socket, then send from a thread of its own until `stop()`.
@@ -338,6 +446,7 @@ impl Engine {
         d.set_item("send_errors", c.send_errors.load(Ordering::Relaxed))?;
         d.set_item("late_frames", c.late_frames.load(Ordering::Relaxed))?;
         d.set_item("max_lateness_ns", c.max_lateness_ns.load(Ordering::Relaxed))?;
+        d.set_item("trajectory_underruns", c.trajectory_underruns.load(Ordering::Relaxed))?;
         Ok(d)
     }
 }
@@ -450,8 +559,12 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
         let index = k % frames_per_second;
         let target = second * NS_PER_S + index * asdus * NS_PER_S / rate;
         // Fill before sleeping: the frame is ready when its time comes.
+        let mut underruns = 0;
         for (stream, buf) in config.streams.iter().zip(buffers.iter_mut()) {
-            stream.render(buf, second, index * asdus, rate);
+            underruns += stream.render(buf, second, index * asdus, rate);
+        }
+        if underruns > 0 {
+            counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
         }
         sleep_until(target);
         let lateness = now_ns() - target;
