@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `Playback.from_array` builds a playback from flat rows (a list, an
+  `array.array` or a NumPy array) and keeps them packed, four bytes a
+  value (`PackedRows`), where the constructor keeps a tuple per row,
+  some 350 bytes for eight channels: half an hour of eight channels at
+  4800 samples/s is 276 MB, not about 3 GB. Both engines play it as
+  before. Made for IEC/IEEE 60255-118-1's compliance signals played to
+  PMUs through the process bus (vpac-wams).
+
 ## 0.9.19 (2026-11-10)
 
 - SV streams can follow a trajectory of phasors pushed while they run

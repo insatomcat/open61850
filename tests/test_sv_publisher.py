@@ -16,6 +16,7 @@ from open61850 import sv
 from open61850.sv_publisher import (
     SIMULATION_BIT,
     Fault,
+    PackedRows,
     Playback,
     Publisher,
     SvStream,
@@ -237,6 +238,28 @@ def test_playback_checks() -> None:
         build_template(_pb_stream(playback=Playback([(1, 2, 3)])), 1, 4000)
     unresolved = _pb_stream(playback=Playback([(1, 2)]))
     assert sample_values(unresolved, 0, 0, 4000) == sample_values(_pb_stream(), 0, 0, 4000)
+
+
+def test_playback_from_array_keeps_the_rows_packed() -> None:
+    import array
+
+    rows = [(1, 2), (3, 4), (-5, 2**31 - 1)]
+    flat = [v for r in rows for v in r]
+    plain = Playback(rows, start_second=100, start_smp=10, qualities=[(1, 2)] * 3)
+    for values in (flat, array.array("i", flat), array.array("q", flat)):
+        packed = Playback.from_array(values, 2, qualities=[1, 2] * 3, start_second=100, start_smp=10)
+        assert isinstance(packed.values, PackedRows) and packed.values.data.itemsize == 4
+        assert len(packed.values) == 3 and packed.channels == 2 and packed.values[-1] == (-5, 2**31 - 1)
+        assert list(packed.values) == list(plain.values) and list(packed.qualities) == list(plain.qualities)
+        a, b = _pb_stream(playback=plain), _pb_stream(playback=packed)
+        for n in range(8, 15):
+            assert sample_values(a, 100, n, 4000) == sample_values(b, 100, n, 4000)
+    with pytest.raises(ValueError):
+        Playback.from_array([1, 2, 3], 2)
+    with pytest.raises(ValueError):
+        Playback.from_array([1, 2], 2, qualities=[1, 2, 3, 4])
+    with pytest.raises(ValueError):
+        Playback.from_array([], 2)
 
 
 def test_playback_starts_with_the_publisher() -> None:

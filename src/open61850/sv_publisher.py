@@ -57,6 +57,7 @@ __all__ = [
     "Wave",
     "Fault",
     "Playback",
+    "PackedRows",
     "Trajectory",
     "SvStream",
     "Template",
@@ -126,6 +127,35 @@ class Fault:
         return (second * rate + smp_cnt - start) % period < length
 
 
+class PackedRows(Sequence):
+    """Rows of ``channels`` integers held in one flat ``array.array`` (a long playback without a tuple per row)."""
+
+    def __init__(self, data: array.array, channels: int) -> None:
+        if channels < 1 or len(data) % channels:
+            raise ValueError("the array must hold whole rows")
+        self.data = data
+        self.channels = channels
+
+    def __len__(self) -> int:
+        return len(self.data) // self.channels
+
+    def __getitem__(self, row):  # type: ignore[override]
+        if isinstance(row, slice):
+            return [self[i] for i in range(*row.indices(len(self)))]
+        if row < 0:
+            row += len(self)
+        if not 0 <= row < len(self):
+            raise IndexError(row)
+        k = row * self.channels
+        return tuple(self.data[k:k + self.channels])
+
+    def tobytes(self, typecode: str) -> bytes:
+        """The rows one after the other as native 32-bit integers of ``typecode`` ("i" or "I")."""
+        if self.data.typecode == typecode and self.data.itemsize == 4:
+            return self.data.tobytes()
+        return array.array(typecode, self.data).tobytes()
+
+
 @dataclass(frozen=True)
 class Playback:
     """Recorded samples sent instead of the waveforms (and of the fault).
@@ -140,24 +170,28 @@ class Playback:
     build them.
     """
 
-    values: tuple[tuple[int, ...], ...]
+    values: Union[tuple[tuple[int, ...], ...], PackedRows]
     start_second: Optional[int] = None
     start_smp: int = 0
     repeat_s: Optional[int] = None
-    qualities: Optional[tuple[tuple[int, ...], ...]] = None
+    qualities: Optional[Union[tuple[tuple[int, ...], ...], PackedRows]] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "values", tuple(tuple(int(v) for v in row) for row in self.values))
-        if self.qualities is not None:
+        if not isinstance(self.values, PackedRows):
+            object.__setattr__(self, "values", tuple(tuple(int(v) for v in row) for row in self.values))
+        if self.qualities is not None and not isinstance(self.qualities, PackedRows):
             object.__setattr__(self, "qualities", tuple(tuple(int(q) for q in row) for row in self.qualities))
-            if len(self.qualities) != len(self.values):
-                raise ValueError("qualities must have one row per sample")
+        if self.qualities is not None and len(self.qualities) != len(self.values):
+            raise ValueError("qualities must have one row per sample")
         if not self.values:
             raise ValueError("a playback needs samples")
         width = len(self.values[0])
-        rows = self.values + (self.qualities or ())
-        if any(len(row) != width for row in rows):
-            raise ValueError("every sample must have the same number of channels")
+        for rows in (self.values, self.qualities or ()):
+            if isinstance(rows, PackedRows):
+                if rows.channels != width:
+                    raise ValueError("every sample must have the same number of channels")
+            elif any(len(row) != width for row in rows):
+                raise ValueError("every sample must have the same number of channels")
         if self.repeat_s is not None and self.repeat_s < 1:
             raise ValueError("repeat_s must be at least 1")
 
@@ -176,6 +210,28 @@ class Playback:
         if self.repeat_s is not None:
             i %= self.repeat_s * rate
         return i if 0 <= i < len(self.values) else None
+
+    @classmethod
+    def from_array(cls, values: Any, channels: int, qualities: Any = None, **kwargs: Any) -> Playback:
+        """A playback from flat rows: ``values[n * channels + ch]`` is channel ``ch`` of sample ``n``.
+
+        ``values`` (and ``qualities``) is anything ``array.array`` takes, a
+        NumPy array included; the rows stay packed, four bytes a value, where
+        the plain constructor keeps a tuple per row (some 350 bytes for eight
+        channels): an hour at 4800 samples/s on eight channels is 553 MB
+        here.
+        """
+        def packed(x: Any, typecode: str) -> PackedRows:
+            if isinstance(x, array.array) and x.typecode == typecode:
+                data = x
+            elif hasattr(x, "astype") and hasattr(x, "tobytes"):  # NumPy, without importing it
+                data = array.array(typecode)
+                data.frombytes(x.astype("=i4" if typecode == "i" else "=u4", copy=False).ravel().tobytes())
+            else:
+                data = array.array(typecode, x)
+            return PackedRows(data, channels)
+
+        return cls(packed(values, "i"), qualities=None if qualities is None else packed(qualities, "I"), **kwargs)
 
     @classmethod
     def from_sv_frames(cls, frames: Iterable[bytes], sv_id: str, **kwargs: Any) -> Playback:
@@ -650,8 +706,10 @@ def _native_streams(streams: Sequence[SvStream], templates: Sequence[Template], 
         if pb is not None and pb.start_second is not None:
             playback = {
                 # Native-endian 32-bit integers, one row after the other.
-                "values": array.array("i", [v for row in pb.values for v in row]).tobytes(),
+                "values": pb.values.tobytes("i") if isinstance(pb.values, PackedRows) else
+                array.array("i", [v for row in pb.values for v in row]).tobytes(),
                 "qualities": None if pb.qualities is None else
+                pb.qualities.tobytes("I") if isinstance(pb.qualities, PackedRows) else
                 array.array("I", [q for row in pb.qualities for q in row]).tobytes(),
                 "channels": pb.channels,
                 "start": pb.start_second * rate + pb.start_smp,

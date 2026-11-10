@@ -48,8 +48,13 @@ def _random_stream(rng: random.Random) -> SvStream:
         values = [[rng.randint(-(1 << 31), (1 << 31) - 1) for _ in range(channels)] for _ in range(rows)]
         qualities = None if rng.random() < 0.5 else [[rng.randint(0, 0xFFFFFFFF) for _ in range(channels)]
                                                       for _ in range(rows)]
-        playback = Playback(values, start_second=rng.choice(BASES) + rng.randint(0, 3), start_smp=rng.randint(0, 4000),
-                            repeat_s=rng.choice([None, 1, 3]), qualities=qualities)
+        kwargs = {"start_second": rng.choice(BASES) + rng.randint(0, 3), "start_smp": rng.randint(0, 4000),
+                  "repeat_s": rng.choice([None, 1, 3])}
+        if rng.random() < 0.5:
+            playback = Playback(values, qualities=qualities, **kwargs)
+        else:
+            playback = Playback.from_array([v for r in values for v in r], channels, qualities=None if qualities is None
+                                           else [q for r in qualities for q in r], **kwargs)
     return SvStream(sv_id=f"SV{rng.randint(0, 99)}", app_id=rng.randint(0, 0xFFFF), dst_mac="01:0c:cd:04:00:01",
                     src_mac="02:00:00:00:00:01", waves=waves, fault=fault, playback=playback,
                     vlan_id=rng.choice([None, 5]), vlan_priority=4, dat_set=rng.choice([None, "LD/LLN0$DS"]))
