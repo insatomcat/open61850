@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `open61850.sv_receiver.Receiver` receives a few SV streams of a busy
+  process bus and hands over each one's samples as fixed-size records
+  (capture time, smpCnt, smpSynch, the Simulation bit, confRev, INT32
+  values and qualities), many at a time: `wait` blocks until a stream
+  holds the samples asked for, `take` gives them as one `bytes`. With
+  open61850-rt (0.9.21) a Rust thread reads the low-latency capture's
+  ring and decodes without the GIL; a Python thread does the same
+  otherwise. Made for software PMUs, which a Python loop over every
+  frame of eight streams kept at 30 to 50 % of a core (vpac-wams).
+
 ## 0.9.20 (2026-11-10)
 
 - `Playback.from_array` builds a playback from flat rows (a list, an

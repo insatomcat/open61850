@@ -27,6 +27,8 @@ use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
+mod receiver;
+
 const NS_PER_S: i64 = 1_000_000_000;
 
 #[derive(Clone)]
@@ -861,6 +863,7 @@ fn decode_goose_frame<'py>(
 #[pymodule]
 fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
+    m.add_class::<receiver::Receiver>()?;
     m.add_function(wrap_pyfunction!(decode_sv_pdu, m)?)?;
     m.add_function(wrap_pyfunction!(decode_sv_frame, m)?)?;
     m.add_function(wrap_pyfunction!(encode_goose_pdu, m)?)?;

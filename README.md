@@ -28,6 +28,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.goose_publisher` | GOOSE publication: a new state sent at once then repeated after min time, doubling up to max time, timeAllowedtoLive three times the wait (as libiec61850) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
 | `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
+| `open61850.sv_receiver` | SV reception for a few streams: `Receiver` hands over each stream's samples as fixed-size records, many at a time (native engine reading the capture's ring without the GIL, or a Python thread) |
 | `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), waveforms rebuilt from phasors pushed while it runs (a simulator's trajectory), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
 | `open61850.comtrade` | COMTRADE records (IEEE C37.111 1991, 1999, 2013; ASCII, BINARY, BINARY32, FLOAT32): channels in primary or secondary values, sample times, resampling; records written in revision 1999 or 2013 |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
@@ -38,7 +39,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.pcap` | pcap and pcapng files (Wireshark, tcpdump), on any OS: reading, and writing classic pcap with nanosecond timestamps |
 | `open61850.ber` | ASN.1 BER primitives |
 
-Only `open61850.mms`, `open61850.capture` and the publishers (`GoosePublisher`, SV `Publisher`) do network I/O; `open61850.pcap` reads and writes files. The public names of each module are those of its `__all__`.
+Only `open61850.mms`, `open61850.capture`, the publishers (`GoosePublisher`, SV `Publisher`) and the SV `Receiver` do network I/O; `open61850.pcap` reads and writes files. The public names of each module are those of its `__all__`.
 
 ## Examples
 
@@ -225,6 +226,21 @@ with Publisher("eth1") as pub:
 ```
 
 Waveforms are functions of UNIX time, so several streams, processes or machines on the same clock stay in phase. With `open61850[rt]` the frames are sent by the Rust engine: absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for all streams, optional `SCHED_FIFO` priority and CPU pinning. Without it, a Python thread sends the same frames, with only the precision of `time.sleep` (tests, low rates). Measured on loopback on a Xeon server, 3 streams at 4800 samples/s, `SCHED_FIFO` 50: every sample sent, delay after the nominal sample time median 6 µs, 99th percentile 14 µs, maximum 46 µs over 10 s.
+
+A subscriber of a few streams on a busy process bus sees every stream's frames. `Receiver` reads them in a thread of its own and keeps, for each stream asked for, its samples as records (capture time, smpCnt, smpSynch, the Simulation bit, confRev, the INT32 values and qualities), handed over many at a time: the caller wakes when a stream holds as many samples as it needs. With `open61850[rt]` the thread is Rust's: it reads the capture's ring and decodes without a Python object per frame and without the GIL.
+
+```python
+from open61850.capture import PacketCapture
+from open61850.ethernet import ETHERTYPE_SV
+from open61850.sv_receiver import Receiver
+
+with PacketCapture("eth1", (ETHERTYPE_SV,), low_latency=True) as cap:
+    rx = Receiver(["MU01_SV", "MU02_SV"], channels=8, capture=cap)
+    rx.start()
+    while True:
+        rx.wait([96, 96], timeout=0.05)          # 20 ms of samples on either stream
+        records = rx.take(0)                     # bytes: record_size(8) octets a sample
+```
 
 ## Command line
 

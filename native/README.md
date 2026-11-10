@@ -2,7 +2,9 @@
 
 The real-time Sampled Values engine of [open61850](https://github.com/insatomcat/open61850), in Rust. Install it with `pip install "open61850[rt]"` and use it through `open61850.sv.Publisher`; it has no API of its own to learn.
 
-It sends the frames open61850 prepares (one template per stream, with the positions of smpCnt and of the samples), computing the samples from the waveform parameters, on absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for every stream, with optional `SCHED_FIFO` priority and CPU pinning. Linux only.
+It also holds the receiver of `open61850.sv_receiver.Receiver`: a thread reading a capture's TPACKET_V2 ring, decoding the frames of the streams asked for and keeping their samples as records, without the GIL.
+
+The publisher sends the frames open61850 prepares (one template per stream, with the positions of smpCnt and of the samples), computing the samples from the waveform parameters, on absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for every stream, with optional `SCHED_FIFO` priority and CPU pinning. Linux only.
 
 The `core/` crate of this workspace, `open61850-core`, holds the process bus codecs (Sampled Values decoding, GOOSE encoding and decoding) for real-time callers: `no_std`, no allocation, no unsafe code, the same accepted input and the same output octets as the Python codecs of open61850. `capi/` is their C API, `libopen61850` (see [capi/README.md](https://github.com/insatomcat/open61850/blob/main/native/capi/README.md)), and `fuzz/` fuzzes them.
 
