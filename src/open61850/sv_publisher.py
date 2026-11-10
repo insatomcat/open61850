@@ -48,7 +48,7 @@ import threading
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, overload
 
 from . import ber, sv
 
@@ -127,7 +127,7 @@ class Fault:
         return (second * rate + smp_cnt - start) % period < length
 
 
-class PackedRows(Sequence):
+class PackedRows(Sequence[tuple[int, ...]]):
     """Rows of ``channels`` integers held in one flat ``array.array`` (a long playback without a tuple per row)."""
 
     def __init__(self, data: array.array, channels: int) -> None:
@@ -139,7 +139,13 @@ class PackedRows(Sequence):
     def __len__(self) -> int:
         return len(self.data) // self.channels
 
-    def __getitem__(self, row):  # type: ignore[override]
+    @overload
+    def __getitem__(self, row: int) -> tuple[int, ...]: ...
+
+    @overload
+    def __getitem__(self, row: slice) -> list[tuple[int, ...]]: ...
+
+    def __getitem__(self, row: Union[int, slice]) -> Union[tuple[int, ...], list[tuple[int, ...]]]:
         if isinstance(row, slice):
             return [self[i] for i in range(*row.indices(len(self)))]
         if row < 0:
