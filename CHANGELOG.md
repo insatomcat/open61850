@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.24 (2026-11-10)
 
 - A clock state that begins inside a frame (between its first sample
   and the next frame) no longer makes the publisher send a sample
