@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.22 (2026-11-10)
 
 - The SV publisher has a merging unit's clock (`Clock`, `ClockState`,
   `Publisher.set_clock`, before the start or while running): from a
