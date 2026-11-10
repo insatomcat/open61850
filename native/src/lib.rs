@@ -239,10 +239,9 @@ impl Stream {
                 buf[at + 4..at + 8].copy_from_slice(&w.quality.to_be_bytes());
             }
         }
-        if synch >= 0 {
-            for &at in &self.smp_synch_offsets {
-                buf[at] = synch as u8;
-            }
+        // The engine keeps its buffers from frame to frame: without a clock's smpSynch, the template's again.
+        for &at in &self.smp_synch_offsets {
+            buf[at] = if synch >= 0 { synch as u8 } else { self.frame[at] };
         }
         underruns
     }

@@ -331,8 +331,9 @@ def test_native_engine_follows_its_clock() -> None:
     asdus = []
     with cap:
         publisher.start(at_second=start)
-        # a grandmaster step of -1 ms at 0.5 s, then holdover: smpSynch local
+        # a grandmaster step of -1 ms at 0.5 s, then holdover: smpSynch local; at 0.8 s true time again
         publisher.set_clock(ClockState(start * ns + ns // 2, offset_ns=-1_000_000, smp_synch=sv.SMP_SYNCH_LOCAL))
+        publisher.set_clock(ClockState(start * ns + 8 * ns // 10))
         while time.time() < start + 1.2:
             got = cap.recv()
             if got is not None and start <= got.timestamp < start + 1:
@@ -341,4 +342,9 @@ def test_native_engine_follows_its_clock() -> None:
     counts = [a.smp_cnt for a in asdus]
     # 2400 samples to 0.5 s, then back to the first taken at or after 0.5 s - 1 ms: 2396 (4.8 samples back)
     assert counts[:2400] == list(range(2400)) and counts[2400:2402] == [2396, 2397]
-    assert {a.smp_synch for a in asdus[:2400]} == {2} and {a.smp_synch for a in asdus[2400:]} == {1}
+    # at 0.8 s, true time again: the frame of 3836 (taken at 0.8 s + 0.83 ms) is the first past it,
+    # so from 3835 to 3840, the first sample taken at or after 0.8 s
+    back = counts.index(3840, 2400)
+    assert counts[back - 1] == 3835
+    assert {a.smp_synch for a in asdus[:2400]} == {2} and {a.smp_synch for a in asdus[2400:back]} == {1}
+    assert {a.smp_synch for a in asdus[back:]} == {2}  # the stream's own again

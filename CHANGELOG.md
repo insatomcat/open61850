@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- open61850-rt sends each stream's own smpSynch again after a clock
+  state that replaced it ends (`ClockState(smp_synch=None)`): 0.9.22's
+  engine reused its frame buffers and kept the replaced value, so a
+  merging unit back in synchronisation still said local (the Python
+  engine was right). Found by vpac-wams' degraded runs.
+
 ## 0.9.22 (2026-11-10)
 
 - The SV publisher has a merging unit's clock (`Clock`, `ClockState`,
