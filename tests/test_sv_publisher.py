@@ -519,3 +519,16 @@ def test_python_engine_follows_its_clock() -> None:
     # 200 samples, then 4 skipped (10 ms at 400/s), smpSynch local from then on
     assert counts[:200] == list(range(200)) and counts[200:202] == [204, 205]
     assert {a.smp_synch for _ts, a in first[:200]} == {2} and {a.smp_synch for _ts, a in first[200:]} == {1}
+
+
+def test_clock_change_within_a_frame_repeats_no_sample() -> None:
+    t0 = 1_790_000_000 * NS
+    # smpSynch and drift change at a time inside a frame (between its two samples): no offset change
+    clock = Clock([ClockState(t0 + NS // 2 + 100_000, drift_ppb=1000.0, smp_synch=1)])
+    state, n = _clock_start(clock, 1_790_000_000, RATE)
+    labels = []
+    while n < 1_790_000_001 * RATE:
+        state, n, _shift, _t = _clock_next(clock, state, n, RATE)
+        labels += [n, n + 1]
+        n += 2
+    assert labels == list(range(labels[0], labels[0] + len(labels)))  # none skipped, none repeated

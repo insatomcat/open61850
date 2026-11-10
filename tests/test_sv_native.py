@@ -342,9 +342,9 @@ def test_native_engine_follows_its_clock() -> None:
     counts = [a.smp_cnt for a in asdus]
     # 2400 samples to 0.5 s, then back to the first taken at or after 0.5 s - 1 ms: 2396 (4.8 samples back)
     assert counts[:2400] == list(range(2400)) and counts[2400:2402] == [2396, 2397]
-    # at 0.8 s, true time again: the frame of 3836 (taken at 0.8 s + 0.83 ms) is the first past it,
-    # so from 3835 to 3840, the first sample taken at or after 0.8 s
-    back = counts.index(3840, 2400)
+    # at 0.8 s, true time again: the frame of 3836, taken at 0.80017 s, is the first past it; it
+    # starts at 3841, the first sample of true time at or after then (3836 to 3840 skipped: +1 ms)
+    back = counts.index(3841, 2400)
     assert counts[back - 1] == 3835
     assert {a.smp_synch for a in asdus[:2400]} == {2} and {a.smp_synch for a in asdus[2400:back]} == {1}
     assert {a.smp_synch for a in asdus[back:]} == {2}  # the stream's own again

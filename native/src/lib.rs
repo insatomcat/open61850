@@ -337,7 +337,7 @@ impl Clock {
         let mut shift = state.offset_at_label(label);
         while let Some(next) = self.next_after(&state).filter(|s| label - shift >= s.at) {
             state = next;
-            n = state.label_at(state.at, rate);
+            n = state.label_at(label - shift, rate);
             label = label_ns(n, rate);
             shift = state.offset_at_label(label);
         }

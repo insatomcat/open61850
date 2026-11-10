@@ -441,7 +441,8 @@ class Clock:
     skip the samples between, one that moves it back sends the samples of
     the time it goes back again (repeated smpCnt). The engines change state
     between two frames: at the first frame whose time under the old state
-    reaches ``at_ns``.
+    reaches ``at_ns``, from the first sample the new state takes at or
+    after that frame's time.
 
     Playback and fault rows, which are on the true sample grid, are taken
     at the nearest sample; waves and trajectories at the exact time.
@@ -893,14 +894,16 @@ def _clock_next(clock: Clock, state: ClockState, n: int, rate: int) -> tuple[Clo
     """For the frame of sample number ``n``: the clock state, the sample number, its shift and its send time.
 
     The state changes when the frame's true time reaches the next state's
-    ``at_ns``: the frame then starts at the first sample taken under it.
+    ``at_ns``: the frame then starts at the first sample the new state takes
+    at or after that frame's true time, so that a change in the middle of a
+    frame sends no sample twice unless the clock went back.
     The native engine does the same operations (``Clock`` in native/src/lib.rs).
     """
     label = _label_ns(n, rate)
     shift = state.offset_at_label(label)
     while (nxt := clock.next_after(state)) is not None and label - shift >= nxt.at_ns:
         state = nxt
-        n = state.label_at(state.at_ns, rate)
+        n = state.label_at(label - shift, rate)
         label = _label_ns(n, rate)
         shift = state.offset_at_label(label)
     return state, n, shift, label - shift

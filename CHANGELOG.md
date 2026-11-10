@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- A clock state that begins inside a frame (between its first sample
+  and the next frame) no longer makes the publisher send a sample
+  twice: the new state's first sample is the first it takes at or
+  after the frame's own time, where it was the first at or after the
+  state's time, which a frame already sent could hold. Only a clock
+  going back sends samples again now. A subscriber saw a step back at
+  every change of smpSynch or drift (vpac-wams' PMUs: a few invalid
+  reports at each GPS loss and return asked from its page).
+
 ## 0.9.23 (2026-11-10)
 
 - open61850-rt sends each stream's own smpSynch again after a clock
