@@ -19,6 +19,7 @@ from open61850.sv_publisher import (
     Playback,
     Publisher,
     SvStream,
+    Trajectory,
     Wave,
     build_template,
     render_frame,
@@ -290,3 +291,67 @@ def test_command_line_replay_options(tmp_path) -> None:
     assert playback.start_second == 1000 and len(playback.values) == 20
     assert list(playback.values[5]) == sample_values(source, 3, 5, 4800)
     assert playback_from_args(_parser().parse_args(base), waves, 0) is None
+
+
+def _traj_stream(trajectory: Trajectory) -> SvStream:
+    return _stream(waves=tuple(Wave(scale=100, quality=0x2000) for _ in range(trajectory.channels)),
+                   trajectory=trajectory)
+
+
+def test_trajectory_rebuilds_the_phasor_it_was_given() -> None:
+    # A phasor at 1 Hz off nominal: the angle turns by 2 pi in a second, the magnitude ramps.
+    t = Trajectory(1, f0=50.0)
+    second = 1_790_000_000
+    for k in range(51):
+        t.push(second * 1_000_000_000 + k * 20_000_000, [(1000.0 + k, 0.3 + 2 * math.pi * 1.0 * k * 0.02)])
+    stream = _traj_stream(t)
+    for smp in range(0, 4800, 7):
+        x = smp / RATE
+        expected = (1000.0 + x / 0.02) * math.cos(2 * math.pi * 51.0 * x + 0.3)
+        assert abs(sample_values(stream, second, smp, RATE)[0] / 100 - expected) < 0.011
+    assert t.underruns == 0
+
+
+def test_trajectory_before_between_and_after_its_points() -> None:
+    t = Trajectory(2)
+    stream = _stream(waves=(Wave(5, freq_hz=0, offset=7, scale=1), Wave(scale=1)), trajectory=t)
+    assert sample_values(stream, 10, 0, RATE) == [7, 0]  # no point: the waves
+    t.push(10 * 10**9 + 10**8, [(100.0, 0.0), (100.0, math.pi / 2)])
+    assert sample_values(stream, 10, 0, RATE) == [7, 0]  # before the first point: the waves
+    assert sample_values(stream, 10, 480, RATE) == [100, 0]  # on it: cos(2 pi 50 * 0.1) = 1
+    assert t.underruns == 1  # past the only point, held
+    t.push(10 * 10**9 + 2 * 10**8, [(200.0, 2 * math.pi - 0.2), (200.0, math.pi / 2)])
+    # between: the angle goes the short way, from 0 to -0.2, not up by 2 pi - 0.2
+    assert sample_values(stream, 10, 720, RATE) == [-round(150 * math.cos(-0.1)), 0]  # 0.15 s: cos(15 pi) = -1
+    # past the last point: magnitude held, the angle goes on at -2 rad/s
+    assert sample_values(stream, 10, 1440, RATE) == [round(200 * math.cos(-0.4)), 0]
+    assert t.underruns == 2
+
+
+def test_trajectory_checks() -> None:
+    t = Trajectory(2)
+    with pytest.raises(ValueError):
+        _stream(trajectory=t)  # three_phase has 8 channels
+    t.push(10, [(1, 0), (1, 0)])
+    with pytest.raises(ValueError):
+        t.push(10, [(1, 0), (1, 0)])
+    with pytest.raises(ValueError):
+        t.push(11, [(1, 0)])
+    with pytest.raises(ValueError):
+        Trajectory(0)
+    publisher = Publisher("lo", rate=RATE, engine="python")
+    publisher.add(_stream())
+    with pytest.raises(ValueError):
+        publisher.push(0, 10, [])
+    publisher.add(_traj_stream(Trajectory(1)))
+    publisher.push(1, 10, [(1.0, 0.0)])
+    assert publisher.streams[1].trajectory.points() == [(10, ((1.0, 0.0),))]  # type: ignore[union-attr]
+
+
+def test_trajectory_drops_the_points_behind() -> None:
+    t = Trajectory(1)
+    for k in range(100):
+        t.push(k * 20_000_000, [(1.0, 0.0)])
+    _traj_stream(t)
+    t.values(1, 0, RATE)  # 1 s is point 50: those before it dropped
+    assert [p[0] for p in t.points()][:2] == [50 * 20_000_000, 51 * 20_000_000]

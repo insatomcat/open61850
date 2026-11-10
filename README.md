@@ -28,7 +28,7 @@ pip install "open61850[rt]"    # adds the real-time SV engine (Linux wheels, x86
 | `open61850.goose_publisher` | GOOSE publication: a new state sent at once then repeated after min time, doubling up to max time, timeAllowedtoLive three times the wait (as libiec61850) |
 | `open61850.sv` | Sampled Values PDUs and frames (IEC 61850-9-2, IEC 61869-9), INT32 + quality samples |
 | `open61850.supervision` | GOOSE and SV stream supervision, as a subscriber sees it: stNum/sqNum and smpCnt gaps, duplicates, late messages, restarts, timeAllowedtoLive and SV timeouts, configuration, simulation and synchronisation changes |
-| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
+| `open61850.sv_publisher` | SV publication: streams, waveforms aligned on the UNIX epoch, periodic faults, playback of recorded samples (a captured SV stream, a COMTRADE record), waveforms rebuilt from phasors pushed while it runs (a simulator's trajectory), 6I3U / 4I4U data sets, frame templates, `Publisher` (native real-time engine or a Python thread) |
 | `open61850.comtrade` | COMTRADE records (IEEE C37.111 1991, 1999, 2013; ASCII, BINARY, BINARY32, FLOAT32): channels in primary or secondary values, sample times, resampling; records written in revision 1999 or 2013 |
 | `open61850.ethernet` | Ethernet II and 802.1Q framing with the APPID header |
 | `open61850.data` | MMS `Data` values and their BER encoding |
@@ -204,6 +204,24 @@ stream.playback = Playback.from_comtrade(
     record, ["IA", "IB", "IC", None, None, None, "VA", "VB", "VC"], rate=4800,
     scales=[w.scale for w in stream.waves], repeat_s=10,    # 9-2LE units: mA and 10 mV
 )
+```
+
+A `Trajectory` makes the waveforms follow phasors given while the stream runs, a phasor-domain simulator's output for instance: each point is a time and a (peak magnitude, angle) per channel, the angle against a cosine at the nominal frequency that peaks at every whole UNIX second, so that it is the synchrophasor a PMU should measure. Between points the magnitude and the angle are interpolated (the angle the short way round); past the last point the angle goes on turning at its last speed and the sample is counted in `stats().trajectory_underruns`.
+
+```python
+import math, time
+from open61850.sv import Trajectory, Wave
+
+stream = SvStream(sv_id="PMU01_SV1", app_id=0x4000, dst_mac="01:0c:cd:04:00:01", src_mac="02:00:00:00:00:01",
+                  waves=tuple(Wave(scale=100) for _ in range(3)), trajectory=Trajectory(3, f0=50.0))
+with Publisher("eth1") as pub:
+    pub.add(stream)
+    start = int(time.time()) + 1
+    v = 230e3 * math.sqrt(2 / 3)
+    for k in range(10):                    # the first 200 ms before the start: the engine fills ahead
+        pub.push(0, start * 10**9 + k * 20_000_000, [(v, 0.0), (v, -2 * math.pi / 3), (v, 2 * math.pi / 3)])
+    pub.start(at_second=start)
+    ...                                    # then each point at least a frame period before its time
 ```
 
 Waveforms are functions of UNIX time, so several streams, processes or machines on the same clock stay in phase. With `open61850[rt]` the frames are sent by the Rust engine: absolute `CLOCK_REALTIME` deadlines, one `sendmmsg` per period for all streams, optional `SCHED_FIFO` priority and CPU pinning. Without it, a Python thread sends the same frames, with only the precision of `time.sleep` (tests, low rates). Measured on loopback on a Xeon server, 3 streams at 4800 samples/s, `SCHED_FIFO` 50: every sample sent, delay after the nominal sample time median 6 µs, 99th percentile 14 µs, maximum 46 µs over 10 s.
