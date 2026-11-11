@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.26 (2026-11-11)
 
 - open61850-rt has `PhasorUnit`, a PMU's work per report on the
   records of `sv_receiver`: the samples placed in time, the merging
