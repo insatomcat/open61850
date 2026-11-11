@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.27 (2026-11-11)
 
 - `PhasorUnit` no longer makes the rest of a stream's buffer NaN each
   time it moves the samples a pending report needs to its start (every
