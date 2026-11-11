@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.25 (2026-11-11)
 
 - `PacketCapture(..., app_ids=...)` keeps only the frames of these
   APPIDs (GOOSE, SV), tagged or not: the kernel's BPF program checks the
