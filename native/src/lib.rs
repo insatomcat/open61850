@@ -28,6 +28,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 mod receiver;
+mod synchrophasor;
 
 const NS_PER_S: i64 = 1_000_000_000;
 
@@ -1024,6 +1025,7 @@ fn decode_goose_frame<'py>(
 fn open61850_rt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<receiver::Receiver>()?;
+    m.add_class::<synchrophasor::PhasorUnit>()?;
     m.add_function(wrap_pyfunction!(decode_sv_pdu, m)?)?;
     m.add_function(wrap_pyfunction!(decode_sv_frame, m)?)?;
     m.add_function(wrap_pyfunction!(encode_goose_pdu, m)?)?;

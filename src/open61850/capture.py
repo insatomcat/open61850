@@ -119,6 +119,8 @@ _FRAME_SIZE_V2 = 2048  # a slot: header, sockaddr_ll, then up to about 1,950 oct
 _LDH_ABS = 0x28  # BPF_LD | BPF_H | BPF_ABS
 _JEQ_K = 0x15  # BPF_JMP | BPF_JEQ | BPF_K
 _RET_K = 0x06  # BPF_RET | BPF_K
+_JGT_K = 0x25  # BPF_JMP | BPF_JGT | BPF_K
+_JGE_K = 0x35  # BPF_JMP | BPF_JGE | BPF_K
 
 
 class CapturedFrame(NamedTuple):
@@ -150,35 +152,53 @@ def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ())
     subscriber to a few of many streams pays the kernel's copy and its own
     reading for its streams only.
     """
-    ets, apps = tuple(ethertypes), tuple(app_ids)
-    # Written with labels, the jumps resolved after: (opcode, true label, false label, k); None falls through.
-    code: list[tuple[int, Optional[str], Optional[str], int]] = [(_LDH_ABS, None, None, 12)]
+    ets = tuple(ethertypes)
+    # The APPIDs as ranges of consecutive values: a range is two tests, one value one, so that a
+    # subscriber to many streams numbered in a row stays within classic BPF's 255-instruction jumps.
+    ranges: list[tuple[int, int]] = []
+    for a in sorted(set(app_ids)):
+        if ranges and a == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], a)
+        else:
+            ranges.append((a, a))
+    # Written with labels, the jumps resolved after: (opcode, true, false, k), a jump being a label,
+    # None (the next instruction) or an int (that many instructions further).
+    code: list[tuple[int, object, object, int]] = [(_LDH_ABS, None, None, 12)]
     code += [(_JEQ_K, "app_u", None, et) for et in ets]
     code += [(_JEQ_K, None, "reject", ETHERTYPE_VLAN), (_LDH_ABS, None, None, 16)]
     code += [(_JEQ_K, "app_t", None, et) for et in ets]
     code.append((_RET_K, None, None, 0))
     labels: dict[str, int] = {}
-    if apps:
+    if ranges:
         for name, offset in (("app_u", 14), ("app_t", 18)):
             labels[name] = len(code)
             code.append((_LDH_ABS, None, None, offset))
-            code += [(_JEQ_K, "accept", None, a) for a in apps]
+            for lo, hi in ranges:
+                if lo == hi:
+                    code.append((_JEQ_K, "accept", None, lo))
+                else:  # lo <= appid: then appid > hi goes on to the next range, else accept
+                    code += [(_JGE_K, None, 1, lo), (_JGT_K, None, "accept", hi)]
             code.append((_RET_K, None, None, 0))
-    else:
-        labels["app_u"] = labels["app_t"] = -1  # straight to accept
     labels["reject"] = len(code)
     code.append((_RET_K, None, None, 0))
     labels["accept"] = len(code)
     code.append((_RET_K, None, None, 0x40000))
-    if labels["app_u"] == -1:
+    if not ranges:
         labels["app_u"] = labels["app_t"] = labels["accept"]
+
+    def jump_to(pc: int, jump: object) -> int:
+        if jump is None:
+            return 0
+        if isinstance(jump, int):
+            return jump
+        return labels[str(jump)] - pc - 1
+
     program = []
     for pc, (op, jt, jf, k) in enumerate(code):
-        if op == _JEQ_K:
-            t = labels[jt] - pc - 1 if jt else 0
-            f = labels[jf] - pc - 1 if jf else 0
+        if op in (_JEQ_K, _JGE_K, _JGT_K):
+            t, f = jump_to(pc, jt), jump_to(pc, jf)
             if not (0 <= t <= 255 and 0 <= f <= 255):
-                raise ValueError(f"too many ethertypes and APPIDs for one filter ({len(ets)} and {len(apps)})")
+                raise ValueError(f"too many ethertypes and APPID ranges for one filter ({len(ets)} and {len(ranges)})")
             program.append((op, t, f, k))
         else:
             program.append((op, 0, 0, k))
@@ -186,7 +206,7 @@ def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ())
 
 
 def run_filter(program: list[tuple[int, int, int, int]], frame: bytes) -> int:
-    """Interpret the subset of classic BPF used by :func:`ethertype_filter` (for tests)."""
+    """Interpret the subset of classic BPF :func:`ethertype_filter` writes (for tests)."""
     pc, acc = 0, 0
     while True:
         code, jt, jf, k = program[pc]
@@ -197,6 +217,10 @@ def run_filter(program: list[tuple[int, int, int, int]], frame: bytes) -> int:
             pc += 1
         elif code == _JEQ_K:
             pc += 1 + (jt if acc == k else jf)
+        elif code == _JGE_K:
+            pc += 1 + (jt if acc >= k else jf)
+        elif code == _JGT_K:
+            pc += 1 + (jt if acc > k else jf)
         elif code == _RET_K:
             return k
         else:

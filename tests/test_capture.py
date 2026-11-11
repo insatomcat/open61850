@@ -66,10 +66,22 @@ def test_filter_without_app_ids_is_unchanged() -> None:
     assert run_filter(program, _sv(0x1234)) and run_filter(program, _sv(0x1234, 7))
 
 
-def test_filter_refuses_too_many_app_ids() -> None:
-    assert run_filter(ethertype_filter((0x88BA,), tuple(range(100))), _sv(99))
+@pytest.mark.parametrize("vlan", [None, 5])
+def test_filter_on_app_id_ranges(vlan: int | None) -> None:
+    """Consecutive APPIDs are tested as ranges: 1000 streams in a row, and scattered ones beside."""
+    apps = (*range(0x4000, 0x4000 + 1000), 0x10, 0x12, 0x5000, 0x5001)
+    program = ethertype_filter((0x88B8, 0x88BA), apps)
+    assert len(program) < 40
+    for a in (0x4000, 0x4001, 0x4000 + 999, 0x10, 0x12, 0x5000, 0x5001):
+        assert run_filter(program, _sv(a, vlan)), hex(a)
+    for a in (0x3FFF, 0x4000 + 1000, 0x11, 0x13, 0x0F, 0x4FFF, 0x5002, 0):
+        assert not run_filter(program, _sv(a, vlan)), hex(a)
+
+
+def test_filter_refuses_too_many_app_id_ranges() -> None:
+    assert run_filter(ethertype_filter((0x88BA,), tuple(range(0, 200, 2))), _sv(198))
     with pytest.raises(ValueError):
-        ethertype_filter((0x88BA,), tuple(range(300)))
+        ethertype_filter((0x88BA,), tuple(range(0, 600, 2)))
 
 
 def _block(packets: list[tuple[bytes, int, int, int, bool]]) -> bytes:

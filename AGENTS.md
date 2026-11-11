@@ -173,6 +173,18 @@ like Python's `round`; a clock's shift subtracts `f * shift / 1e9` last.
 streams, shifted or not, and the clocks' frames (`clock_next`) on random
 states; keep them identical when changing either.
 
+`PhasorUnit` (`native/src/synchrophasor.rs`, 0.9.26) is a PMU's work per
+report for a subscriber of `sv_receiver`: one stream's records placed on
+the global sample index (gaps NaN or filled, a step back made NaN, a
+silence restarting), the merging unit's time checked, IEC/IEEE
+60255-118-1 Annex D's synchrophasors, frequency and ROCOF, and each
+report as a C37.118.2 data frame (polar float, STAT, time quality). It
+is vpac-wams' Python PMU (`vpac_wams.pmu`) written again step for step,
+the filter's taps given by it; that PMU stays the reference and its
+tests compare the frames (`tests/test_pmu_native.py` there: the same
+times and STAT, floats within 2e-6). There a report took 3.2 us in
+class P (123 in Python), 6.4 in class M (217). Change both together.
+
 Measured on a Xeon Gold server (loopback, 10 s, 3 streams at 4800
 samples/s): no priority, median 62 µs after the nominal time, p99 73 µs,
 max 0.9 ms; `SCHED_FIFO` 50, median 6 µs, p99 14 µs, max 46 µs. PO's C

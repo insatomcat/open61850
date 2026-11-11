@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- open61850-rt has `PhasorUnit`, a PMU's work per report on the
+  records of `sv_receiver`: the samples placed in time, the merging
+  unit's time checked, the synchrophasors, frequency and ROCOF of
+  IEC/IEEE 60255-118-1's Annex D (the filter's taps given by the
+  caller), each report as an IEEE C37.118.2 data frame. It is
+  vpac-wams' Python PMU written again in Rust, which that PMU's tests
+  compare frame by frame; a report takes 3.2 us in class P where it
+  took 123 in Python, and one PMU process followed 32 streams within
+  class P's latency at 50 frames/s, where it followed 8.
+- A capture's APPID filter tests consecutive APPIDs as one range: 128
+  streams numbered in a row went past classic BPF's jumps of 255
+  instructions and the capture refused them; 1000 in a row now take
+  two tests.
+
 ## 0.9.25 (2026-11-11)
 
 - `PacketCapture(..., app_ids=...)` keeps only the frames of these
