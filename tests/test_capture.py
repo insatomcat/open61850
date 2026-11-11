@@ -48,6 +48,30 @@ def test_filter_on_one_ethertype() -> None:
     assert not run_filter(program, _frame(0x88B8, vlan=1))
 
 
+def _sv(app_id: int, vlan: int | None = None) -> bytes:
+    return _frame(0x88BA, vlan, app_id.to_bytes(2, "big") + b"\x00\x08\x00\x00\x00\x00")
+
+
+@pytest.mark.parametrize("vlan", [None, 5])
+def test_filter_on_app_ids(vlan: int | None) -> None:
+    program = ethertype_filter((0x88B8, 0x88BA), (0x4000, 0x4002))
+    assert run_filter(program, _sv(0x4000, vlan))
+    assert run_filter(program, _sv(0x4002, vlan))
+    assert not run_filter(program, _sv(0x4001, vlan))
+    assert not run_filter(program, _frame(0x0800, vlan, (0x4000).to_bytes(2, "big") + bytes(6)))
+
+
+def test_filter_without_app_ids_is_unchanged() -> None:
+    program = ethertype_filter((0x88BA,), ())
+    assert run_filter(program, _sv(0x1234)) and run_filter(program, _sv(0x1234, 7))
+
+
+def test_filter_refuses_too_many_app_ids() -> None:
+    assert run_filter(ethertype_filter((0x88BA,), tuple(range(100))), _sv(99))
+    with pytest.raises(ValueError):
+        ethertype_filter((0x88BA,), tuple(range(300)))
+
+
 def _block(packets: list[tuple[bytes, int, int, int, bool]]) -> bytes:
     """A TPACKET_V3 block: (frame as the kernel stores it, status, tci, tpid, outgoing) per packet."""
     first = 48
@@ -216,3 +240,16 @@ def test_low_latency_hands_each_frame_over_at_once() -> None:
             assert got is not None and got.data[-8:] == n.to_bytes(8, "big")
             delays.append(time.time() - got.timestamp)
         assert sorted(delays)[300] < 0.001
+
+
+@linux_only
+def test_a_capture_on_app_ids_receives_those_streams_only() -> None:
+    sender = _raw_sender()
+    with sender, capture.PacketCapture("lo", (0x88BA,), timeout=0.3, outgoing=False, promiscuous=False,
+                                       app_ids=(0x4001,)) as cap:
+        for app_id in (0x4000, 0x4001, 0x4002, 0x4001):
+            sender.send(_sv(app_id))
+        got = []
+        while (frame := cap.recv()) is not None:
+            got.append(int.from_bytes(frame.data[14:16], "big"))
+        assert got == [0x4001, 0x4001]

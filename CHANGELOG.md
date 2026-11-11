@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `PacketCapture(..., app_ids=...)` keeps only the frames of these
+  APPIDs (GOOSE, SV), tagged or not: the kernel's BPF program checks the
+  APPID after the ethertype (`ethertype_filter(ethertypes, app_ids)`,
+  `set_ethertypes(ethertypes, app_ids)`). A subscriber to a few streams
+  of a bus no longer receives the others' frames. On a veth carrying 32
+  SV streams to 8 capturing processes, each process read every frame of
+  the bus and the copies to every socket took a whole core of the
+  sender's; with the filter, 64 streams to 16 processes took 56 % of it
+  (vpac-wams' load test). The sv_receiver reads the same capture, so
+  both its engines take the filter.
+
 ## 0.9.24 (2026-11-10)
 
 - A clock state that begins inside a frame (between its first sample

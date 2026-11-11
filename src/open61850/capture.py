@@ -9,7 +9,11 @@ libpcap it reads a TPACKET_V3 ring shared with the kernel: one poll per
 block of frames instead of one system call per frame, which matters at the
 ~17,000 frames/s of a process bus.
 
-- a classic BPF program keeps only those ethertypes, tagged or not;
+- a classic BPF program keeps only those ethertypes, tagged or not, and
+  only some APPIDs when asked (``app_ids``): on a veth carrying 32 SV
+  streams to 8 capturing processes, every frame copied to every socket
+  took a whole core of the sender's, and each process read the other
+  streams' frames for nothing;
 - most drivers strip the 802.1Q tag before the socket sees the frame: the
   tag the ring header reports is put back in place, so frames look like the
   wire (what libpcap does);
@@ -136,24 +140,48 @@ class Ring(NamedTuple):
     slots: int
 
 
-def ethertype_filter(ethertypes: tuple[int, ...]) -> list[tuple[int, int, int, int]]:
+def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ()) -> list[tuple[int, int, int, int]]:
     """Classic BPF program accepting ``ethertypes``, with or without one 802.1Q tag.
 
     When the kernel strips the tag, the ethertype is at offset 12; otherwise
-    12 holds 0x8100 and the ethertype is at 16.
+    12 holds 0x8100 and the ethertype is at 16. With ``app_ids``, a frame is
+    kept only if the APPID that follows its ethertype (GOOSE, SV, GSE) is one
+    of them: the other streams of the bus never reach the socket, so a
+    subscriber to a few of many streams pays the kernel's copy and its own
+    reading for its streams only.
     """
-    n = len(ethertypes)
-    accept = 2 * n + 4  # index of the "accept" instruction
-    program: list[tuple[int, int, int, int]] = [(_LDH_ABS, 0, 0, 12)]
-    for i, ethertype in enumerate(ethertypes):
-        program.append((_JEQ_K, accept - (1 + i) - 1, 0, ethertype))
-    reject = 2 * n + 3
-    program.append((_JEQ_K, 0, reject - (n + 1) - 1, ETHERTYPE_VLAN))
-    program.append((_LDH_ABS, 0, 0, 16))
-    for i, ethertype in enumerate(ethertypes):
-        program.append((_JEQ_K, accept - (n + 3 + i) - 1, 0, ethertype))
-    program.append((_RET_K, 0, 0, 0))
-    program.append((_RET_K, 0, 0, 0x40000))
+    ets, apps = tuple(ethertypes), tuple(app_ids)
+    # Written with labels, the jumps resolved after: (opcode, true label, false label, k); None falls through.
+    code: list[tuple[int, Optional[str], Optional[str], int]] = [(_LDH_ABS, None, None, 12)]
+    code += [(_JEQ_K, "app_u", None, et) for et in ets]
+    code += [(_JEQ_K, None, "reject", ETHERTYPE_VLAN), (_LDH_ABS, None, None, 16)]
+    code += [(_JEQ_K, "app_t", None, et) for et in ets]
+    code.append((_RET_K, None, None, 0))
+    labels: dict[str, int] = {}
+    if apps:
+        for name, offset in (("app_u", 14), ("app_t", 18)):
+            labels[name] = len(code)
+            code.append((_LDH_ABS, None, None, offset))
+            code += [(_JEQ_K, "accept", None, a) for a in apps]
+            code.append((_RET_K, None, None, 0))
+    else:
+        labels["app_u"] = labels["app_t"] = -1  # straight to accept
+    labels["reject"] = len(code)
+    code.append((_RET_K, None, None, 0))
+    labels["accept"] = len(code)
+    code.append((_RET_K, None, None, 0x40000))
+    if labels["app_u"] == -1:
+        labels["app_u"] = labels["app_t"] = labels["accept"]
+    program = []
+    for pc, (op, jt, jf, k) in enumerate(code):
+        if op == _JEQ_K:
+            t = labels[jt] - pc - 1 if jt else 0
+            f = labels[jf] - pc - 1 if jf else 0
+            if not (0 <= t <= 255 and 0 <= f <= 255):
+                raise ValueError(f"too many ethertypes and APPIDs for one filter ({len(ets)} and {len(apps)})")
+            program.append((op, t, f, k))
+        else:
+            program.append((op, 0, 0, k))
     return program
 
 
@@ -221,6 +249,7 @@ class PacketCapture:
         outgoing: bool = True,
         low_latency: bool = False,
         busy_poll: Optional[int] = None,
+        app_ids: tuple[int, ...] = (),
     ) -> None:
         """Open the capture; ``recv`` returns None after ``timeout`` seconds without a frame.
 
@@ -229,6 +258,7 @@ class PacketCapture:
         ``low_latency`` hands each frame over at once (TPACKET_V2, see above).
         ``busy_poll``: microseconds of kernel busy polling for this socket, 0
         for none; None keeps the host's ``net.core.busy_read`` (see above).
+        ``app_ids``: keep only the frames of these APPIDs (:func:`ethertype_filter`).
         """
         self.iface = iface
         self.outgoing = outgoing
@@ -245,7 +275,7 @@ class PacketCapture:
         # Protocol 0: no frame is queued before the filter is attached and the socket bound.
         self._sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0)
         try:
-            self.set_ethertypes(ethertypes)
+            self.set_ethertypes(ethertypes, app_ids)
             if busy_poll is not None:
                 if busy_poll < 0:
                     raise ValueError("busy_poll must not be negative")
@@ -277,9 +307,9 @@ class PacketCapture:
             self.close()
             raise
 
-    def set_ethertypes(self, ethertypes: tuple[int, ...]) -> None:
-        """Replace the kernel filter."""
-        program = ethertype_filter(tuple(ethertypes))
+    def set_ethertypes(self, ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ()) -> None:
+        """Replace the kernel filter (the ethertypes, and the APPIDs when given)."""
+        program = ethertype_filter(tuple(ethertypes), tuple(app_ids))
         code = b"".join(struct.pack("=HBBI", *insn) for insn in program)
         buf = ctypes.create_string_buffer(code, len(code))
         fprog = struct.pack("@HP", len(program), ctypes.addressof(buf))
