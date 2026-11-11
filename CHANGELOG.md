@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.28 (2026-11-11)
 
 - A capture whose socket holds an error (ENETDOWN, when it was bound
   while its interface was still down, or when the interface went down)
