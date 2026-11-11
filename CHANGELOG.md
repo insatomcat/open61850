@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- A capture whose socket holds an error (ENETDOWN, when it was bound
+  while its interface was still down, or when the interface went down)
+  no longer makes its reader spin: poll() returned at once until the
+  error was read, and nothing read it. `PacketCapture.recv` and the
+  native receiver's thread now read `SO_ERROR` on `POLLERR`, which
+  clears it, and count it (`CaptureStats.errors`,
+  `ReceiverStats.errors`). A PMU of vpac-wams that started while its
+  pod's veth was being made spun at 100 % of its CPU at SCHED_FIFO and
+  starved its own main thread: no report went out until the error was
+  read by hand.
+
 ## 0.9.27 (2026-11-11)
 
 - `PhasorUnit` no longer makes the rest of a stream's buffer NaN each

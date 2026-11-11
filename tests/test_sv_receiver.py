@@ -179,3 +179,37 @@ def test_capture_on_lo(engine):
                 sender2.send(frames[0][0])
                 f = cap.recv()
             assert f is not None and f.data == frames[0][0]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="AF_PACKET")
+@pytest.mark.parametrize("engine", ENGINES)
+def test_a_receiver_started_while_its_interface_is_down(veth_down, engine):
+    """The socket's ENETDOWN is cleared once: the thread sleeps in poll(), then receives once the link is up.
+
+    The native thread polled without reading the error and spun at 100 % of its CPU; at the PMU's own
+    SCHED_FIFO priority on the same CPU, it starved the PMU's main thread (galva1, 2026-11-11).
+    """
+    from open61850.capture import PacketCapture
+
+    near, far, up = veth_down
+    frames = _frames(_stream("MU01_SV"), 100)
+    with PacketCapture(far, (0x88BA,), timeout=0.05, promiscuous=False, low_latency=True) as cap:
+        rx = Receiver(["MU01_SV"], 8, capture=cap, engine=engine)
+        cpu = time.process_time()
+        rx.start()
+        try:
+            time.sleep(0.5)
+            assert time.process_time() - cpu < 0.2  # not spinning
+            errors = rx.stats().errors if engine == "native" else cap.stats().errors
+            assert errors == 1
+            up()
+            sender = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+            sender.bind((near, 0))
+            with sender:
+                deadline = time.monotonic() + 5
+                while not rx.wait([200], timeout=0.05) and time.monotonic() < deadline:
+                    for raw, _ in frames:
+                        sender.send(raw)
+        finally:
+            rx.stop()
+        assert len(rx.take(0)) >= 200 * record_size(8)

@@ -40,6 +40,8 @@ struct Counters {
     not_sv: AtomicU64,
     malformed: AtomicU64,
     overflows: AtomicU64,
+    // socket errors cleared (SO_ERROR), such as ENETDOWN when the interface goes down
+    errors: AtomicU64,
 }
 
 struct Shared {
@@ -324,6 +326,7 @@ impl Receiver {
         d.set_item("not_sv", c.not_sv.load(Ordering::Relaxed))?;
         d.set_item("malformed", c.malformed.load(Ordering::Relaxed))?;
         d.set_item("overflows", c.overflows.load(Ordering::Relaxed))?;
+        d.set_item("errors", c.errors.load(Ordering::Relaxed))?;
         Ok(d)
     }
 }
@@ -395,7 +398,7 @@ fn ring_loop(
         // hand the slot over with, read and written atomically.
         let status = unsafe { &*(hdr as *const std::sync::atomic::AtomicU32) };
         if status.load(Ordering::Acquire) & TP_STATUS_USER == 0 {
-            poll_once(fd);
+            poll_once(fd, &sh.counters);
             continue;
         }
         // SAFETY: a slot owned by user space holds a tpacket2_hdr, then the
@@ -419,13 +422,29 @@ fn ring_loop(
 }
 
 #[cfg(target_os = "linux")]
-fn poll_once(fd: i32) {
+fn poll_once(fd: i32, c: &Counters) {
     let mut p = libc::pollfd { fd, events: libc::POLLIN | libc::POLLERR, revents: 0 };
     // SAFETY: one valid pollfd; 100 ms so that stop() is seen.
-    unsafe { libc::poll(&mut p, 1, 100) };
+    let n = unsafe { libc::poll(&mut p, 1, 100) };
+    if n > 0 && p.revents & libc::POLLERR != 0 {
+        // A pending socket error (ENETDOWN when the socket was bound to an
+        // interface still down, or when the interface went down) makes
+        // poll() return at once until it is read: unread, this thread spun
+        // on poll() and starved every thread of its CPU at or below its
+        // priority. Reading SO_ERROR clears it.
+        let mut err: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: an int and its length for getsockopt.
+        let rc = unsafe {
+            libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, (&mut err as *mut libc::c_int).cast(), &mut len)
+        };
+        if rc == 0 && err != 0 {
+            c.errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn poll_once(_fd: i32) {
+fn poll_once(_fd: i32, _c: &Counters) {
     std::thread::sleep(Duration::from_millis(100));
 }

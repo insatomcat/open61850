@@ -106,6 +106,7 @@ class ReceiverStats:
     malformed: int = 0  # SV frames that do not decode
     overflows: int = 0  # records dropped, a stream's buffer full
     engine: str = ""
+    errors: int = 0  # socket errors the native engine's thread cleared; the Python engine's are the capture's
 
 
 def native_available() -> bool:

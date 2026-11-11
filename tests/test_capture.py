@@ -9,6 +9,7 @@ import socket
 import struct
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,32 @@ def test_a_capture_on_app_ids_receives_those_streams_only() -> None:
         while (frame := cap.recv()) is not None:
             got.append(int.from_bytes(frame.data[14:16], "big"))
         assert got == [0x4001, 0x4001]
+
+
+@linux_only
+@pytest.mark.parametrize("low_latency", [False, True], ids=["v3", "v2"])
+def test_a_capture_bound_while_its_interface_is_down(veth_down: tuple[str, str, Callable[[], None]], low_latency: bool) -> None:
+    """Bound to an interface still down, the socket holds ENETDOWN: recv() clears it, then waits its timeout.
+
+    Unread, the error made every poll() return at once: a PMU of vpac-wams that started while its pod's veth
+    was being made spun on poll() at 100 % of its CPU (galva1, 2026-11-11).
+    """
+    near, far, up = veth_down
+    with capture.PacketCapture(far, (0x88BA,), timeout=0.2, promiscuous=False, low_latency=low_latency) as cap:
+        assert cap.recv() is None
+        assert cap.stats().errors == 1
+        t = time.monotonic()
+        assert cap.recv() is None
+        assert time.monotonic() - t > 0.15  # poll() blocks again
+        up()
+        sender = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)  # type: ignore[attr-defined]
+        sender.bind((near, 0))
+        with sender:
+            frame = _frame(0x88BA, body=bytes(8))
+            deadline = time.monotonic() + 5
+            got = None
+            while got is None and time.monotonic() < deadline:  # the first frames may go before the link is up
+                sender.send(frame)
+                got = cap.recv()
+        assert got is not None and got.data == frame
+        assert cap.stats().errors == 1

@@ -334,6 +334,14 @@ TPACKET_V2 ring of 2048-octet slots instead, each visible as soon as it is
 written: 7 us in the median, 0.1 ms at most, nothing dropped. PO measures
 with kernel timestamps and keeps the block ring; a protection needs V2.
 
+A socket bound while its interface is down holds ENETDOWN (`packet_do_bind`
+in `af_packet.c`), and so does one whose interface goes down; the hook is
+put back when the interface comes up, but the error stays, and poll()
+returns `POLLERR` at once until `SO_ERROR` is read. Every reader reads it
+on `POLLERR` and counts it (`errors`). Unread, both receivers spun: a PMU
+started while the player made its pod's veth pair (`ip link add`, then
+`up`) held its CPU at 100 % at SCHED_FIFO and starved its own main thread.
+
 ## Supervision
 
 The ideas come from a private GOOSE/SV package of a protection project,

@@ -51,6 +51,10 @@ frame when ``tp_status & TP_STATUS_USER``, at ``tp_mac`` for
 ``sockaddr_ll`` following the header at 32; the reader writes
 ``TP_STATUS_KERNEL`` to give the slot back, takes the slots in order, and
 sets ``next_slot`` to where it stopped before ``recv`` is called again.
+When its poll() returns ``POLLERR`` it reads ``SO_ERROR``, which clears
+the error: a socket bound while its interface is down, or whose
+interface went down, holds ENETDOWN, and poll() returns at once until it
+is read, the frames flowing again once the interface is up.
 
 Example::
 
@@ -132,6 +136,7 @@ class CapturedFrame(NamedTuple):
 class CaptureStats(NamedTuple):
     received: int
     dropped: int  # frames the kernel could not queue to the socket
+    errors: int = 0  # socket errors read and cleared (ENETDOWN: the interface was down)
 
 
 class Ring(NamedTuple):
@@ -290,6 +295,7 @@ class PacketCapture:
         self._timeout_ms = -1 if timeout is None else max(1, int(timeout * 1000))
         self._received = 0
         self._dropped = 0
+        self._errors = 0
         self._pending: collections.deque[CapturedFrame] = collections.deque()
         self._blocks = max(2, buffer_bytes // _BLOCK_SIZE)
         self._next_block = 0
@@ -379,8 +385,14 @@ class PacketCapture:
                 return self._pending.popleft()
             if polled:
                 return None
-            self._poll.poll(self._timeout_ms)
+            if any(ev & select.POLLERR for _fd, ev in self._poll.poll(self._timeout_ms)):
+                self._clear_error()
             polled = True
+
+    def _clear_error(self) -> None:
+        """Read the socket's pending error, which clears it (see the module's notes); counted in stats()."""
+        if self._sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR):
+            self._errors += 1
 
     def _read_ready_blocks(self) -> bool:
         """Copy the frames of every block the kernel handed over, and give the blocks back."""
@@ -415,7 +427,7 @@ class PacketCapture:
         packets, drops = struct.unpack_from("II", self._sock.getsockopt(SOL_PACKET, PACKET_STATISTICS, size))
         self._received += packets
         self._dropped += drops
-        return CaptureStats(self._received, self._dropped)
+        return CaptureStats(self._received, self._dropped, self._errors)
 
     def close(self) -> None:
         if self._ring is not None:
