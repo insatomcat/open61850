@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `PhasorUnit` no longer makes the rest of a stream's buffer NaN each
+  time it moves the samples a pending report needs to its start (every
+  4 s): that part is written before it is read. Every stream of one
+  clock moved at the same wake, and with 64 streams on a Xeon Silver
+  4310 that wake took 7 ms where the others took 1.4, which made the
+  last streams' reports late: one PMU process of vpac-wams now follows
+  96 streams within class P's latency at 50 frames/s, where it
+  followed 32.
+
 ## 0.9.26 (2026-11-11)
 
 - open61850-rt has `PhasorUnit`, a PMU's work per report on the

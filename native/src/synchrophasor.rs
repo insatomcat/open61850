@@ -218,8 +218,10 @@ impl Group {
         if pos >= self.cap {
             let src = (self.next - self.base - self.keep).max(0);
             let n = self.next - self.base - src;
+            // Only the samples a pending report needs move; what lies past them is written before it is read
+            // (a sample, or a gap made NaN or filled). Making it NaN as well cost 460 kB a group, at the same
+            // wake for every stream of one clock: 7 ms every 4 s with 64 streams on a Xeon Silver 4310.
             self.buf.copy_within(src as usize..(src + n) as usize, 0);
-            self.buf[n as usize..].fill([f64::NAN; 3]);
             self.base += src;
             pos = index - self.base;
         }
