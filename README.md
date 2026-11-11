@@ -253,6 +253,8 @@ with PacketCapture("eth1", (ETHERTYPE_SV,), low_latency=True) as cap:
         records = rx.take(0)                     # bytes: record_size(8) octets a sample
 ```
 
+A PMU can be built on these records with `open61850_rt.PhasorUnit` (Rust, in `open61850[rt]`): fed with one stream's records, it places the samples in time, checks the merging unit's time, computes the synchrophasors, frequency and ROCOF of IEC/IEEE 60255-118-1's Annex D (classes P and M, the filter's taps given by the caller) and returns each report as an IEEE C37.118.2 data frame. A report takes 3.2 us in class P.
+
 ## Command line
 
 ```bash
