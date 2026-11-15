@@ -349,7 +349,11 @@ shared by its maintainer, and are rewritten here. Its subscribers dropped
 every frame whose stNum was below the last one seen: a restarted IED was
 ignored until its stNum passed the old value. Here a counter behind the reference is a duplicate if
 it is among the last 16 accepted, late otherwise (and comes off the missed
-count); further behind, a restart that becomes the new reference.
+count); further behind, a restart that becomes the new reference. Within one stNum, a sqNum that
+goes back with another t (the time of the state change, the same in every
+message of a state) is a restart too: a publisher that reboots before its
+first state change sends stNum 1 again, and was ignored until its sqNum
+passed the old one.
 
 smpCnt wraps once per second. The wrap comes from `sample_rate`, from smpRate
 when smpMod = 1 (samples per second), or from the highest count seen before

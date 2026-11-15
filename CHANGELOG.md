@@ -13,6 +13,11 @@
   sent, where they named the last one buffered. A client that came back
   and enabled its block with RptEna alone, as IEDscout does, got nothing
   of what was buffered while it was away; a VMC7 sends it all.
+- `GooseSupervisor` follows a publisher that restarts with the same
+  stNum (one that reboots before its first state change sends stNum 1
+  again): a sqNum that goes back with another t, or by more than 16, is a
+  RESTART. Every message was OUT_OF_ORDER and dropped until the sqNum
+  passed the old one, and each took one off the missed count.
 
 ## 0.9.28 (2026-11-11)
 

@@ -20,7 +20,11 @@ GOOSE (key: gocbRef), IEC 61850-8-1 retransmission scheme:
   ``DUPLICATE``, an older one never seen ``OUT_OF_ORDER`` (it then comes
   off the missed count);
 - a stNum that goes back is a ``RESTART`` (the publisher restarted): it
-  becomes the new reference, so the stream is followed again at once;
+  becomes the new reference, so the stream is followed again at once. So
+  is a sqNum that goes back within one stNum with another ``t`` (``t`` is
+  the time of the state change, the same in every message of a state) or
+  by more than 16: a publisher that restarts before its first state change
+  sends stNum 1 again;
 - no message within timeAllowedtoLive is a ``TIMEOUT``, the next message
   ``RESUMED``; confRev, datSet, goID or numDatSetEntries changing is
   ``CONFIG_CHANGED``; the simulation and ndsCom flags are reported when set
@@ -207,6 +211,12 @@ def _follow_goose(stream: GooseStream, pdu: goose.GoosePDU, emit: _Emit) -> bool
     prev = stream.last
     if pdu.st_num == prev.st_num:
         if pdu.sq_num == prev.sq_num or (pdu.sq_num < prev.sq_num and not _sq_next(prev.sq_num, pdu.sq_num)):
+            if pdu.timestamp != prev.timestamp or prev.sq_num - pdu.sq_num > REORDER_WINDOW:
+                # Not a copy of a message of this state: the publisher restarted with the same stNum.
+                stream.recent.clear()
+                why = "another t" if pdu.timestamp != prev.timestamp else "sqNum far behind"
+                emit(EventKind.RESTART, f"stNum {pdu.st_num} sqNum {prev.sq_num} -> {pdu.sq_num}, {why}")
+                return True
             return _late(stream, pdu.sq_num, f"stNum {pdu.st_num} sqNum {pdu.sq_num}", prev.sq_num, emit)
         if not _sq_next(prev.sq_num, pdu.sq_num):
             missed = pdu.sq_num - prev.sq_num - 1

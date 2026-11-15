@@ -72,6 +72,21 @@ def test_goose_restart_is_followed_at_once() -> None:
     assert _kinds(sup.feed(_goose(2, 0, True), 5.2)) == [K.STATE_CHANGE]
 
 
+def test_goose_restart_with_the_same_st_num_is_followed() -> None:
+    """A publisher that reboots before its first state change sends stNum 1 again, sqNum from 0."""
+    sup = GooseSupervisor()
+    for sq in range(500):
+        sup.feed(_goose(1, sq), float(sq))
+    rebooted = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    (event,) = sup.feed(_goose(1, 0, timestamp=rebooted), 600.0)
+    assert event.kind is K.RESTART and "another t" in event.detail
+    assert sup.feed(_goose(1, 1, timestamp=rebooted), 601.0) == []  # followed again at once
+    assert sup.streams[REF].last.sq_num == 1 and sup.streams[REF].missed == 0
+    # the same t, but far behind: a restart too (a publisher that does not move t)
+    sup.feed(_goose(1, 300, timestamp=rebooted), 602.0)
+    assert _kinds(sup.feed(_goose(1, 2, timestamp=rebooted), 603.0)) == [K.RESTART]
+
+
 def test_goose_counter_wraps() -> None:
     sup = GooseSupervisor()
     sup.feed(_goose(0xFFFFFFFF, 0xFFFFFFFF), 0.0)
