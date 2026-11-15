@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.29 (2026-11-15)
 
 - `MmsClient` survives a report callback or listener that raises: the
   exception killed its receive thread, the client still said it was
