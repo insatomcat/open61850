@@ -17,6 +17,7 @@ from typing import Optional
 __all__ = [
     "TPKT_VERSION",
     "DEFAULT_TPDU_SIZE_CODE",
+    "MAX_TSDU",
     "TransportError",
     "send_tpkt",
     "recv_tpkt",
@@ -34,6 +35,8 @@ _EOT = 0x80
 
 # TPDU size parameter: 2^code bytes. 0x0A = 1024, the size IEDs commonly accept.
 DEFAULT_TPDU_SIZE_CODE = 0x0A
+# A TSDU reassembled from DT TPDUs is refused beyond this: MMS PDUs stay within the size agreed at association.
+MAX_TSDU = 16 << 20
 
 
 class TransportError(ConnectionError):
@@ -93,12 +96,19 @@ def connection_request(
 
 
 class IsoConnection:
-    """A COTP connection carrying whole TSDUs (the user data of MMS)."""
+    """A COTP connection carrying whole TSDUs (the user data of MMS).
 
-    def __init__(self, sock: socket.socket, *, tpdu_size: int = 1 << DEFAULT_TPDU_SIZE_CODE) -> None:
+    ``max_tsdu``: the largest TSDU :meth:`recv` reassembles; a peer that sends
+    more without ending it is refused (:class:`TransportError`), so that it
+    cannot make the receiver hold its data without end.
+    """
+
+    def __init__(self, sock: socket.socket, *, tpdu_size: int = 1 << DEFAULT_TPDU_SIZE_CODE,
+                 max_tsdu: int = MAX_TSDU) -> None:
         self._sock = sock
         self._tpdu_size = tpdu_size
         self._send_lock = threading.Lock()
+        self.max_tsdu = max_tsdu
 
     @classmethod
     def connect(
@@ -152,6 +162,7 @@ class IsoConnection:
     def recv(self) -> Optional[bytes]:
         """Receive one TSDU; None when the peer closed or disconnected."""
         chunks: list[bytes] = []
+        size = 0
         while True:
             payload = recv_tpkt(self._sock)
             if payload is None:
@@ -166,8 +177,15 @@ class IsoConnection:
             if len(payload) < 3:
                 raise TransportError(f"DT TPDU too short: {payload.hex()}")
             chunks.append(payload[3:])
+            size += len(payload) - 3
+            if size > self.max_tsdu:
+                raise TransportError(f"TSDU above {self.max_tsdu} bytes")
             if payload[2] & _EOT:
                 return b"".join(chunks)
+
+    def settimeout(self, timeout: Optional[float]) -> None:
+        """Bound each blocking receive and send (None: no bound); a timeout raises :class:`TimeoutError`."""
+        self._sock.settimeout(timeout)
 
     @property
     def local_address(self) -> Optional[str]:

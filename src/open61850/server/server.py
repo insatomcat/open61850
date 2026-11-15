@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import bisect
 import collections
+import errno
 import socket
 import struct
 import sys
@@ -58,6 +59,8 @@ __all__ = ["MmsServer", "ServerConnection", "ERROR_DEFINITION", "ERROR_ACCESS"]
 ERROR_DEFINITION = 2  # object-undefined = 1
 ERROR_ACCESS = 7  # object-non-existent = 2
 _OBJECT_UNDEFINED = 1
+_ENVELOPE = 1024  # session and presentation octets around an MMS PDU, with room to spare
+_BEFORE_ASSOCIATION = 1 << 16  # the largest TSDU before the association (a request is a few hundred octets)
 
 WriteHook = Callable[["ServerConnection", ObjectName, IECData], Optional[Union[int, bool]]]
 
@@ -78,6 +81,8 @@ class ServerConnection:
         self._ready = threading.Condition()
         # Run once the response to the current request has gone (a CommandTermination follows its write).
         self.after_response: list[Callable[[], None]] = []
+        # The names of the GetNameList being paged through: (object class, domain) and the list.
+        self._names: Optional[tuple[tuple[int, Optional[str]], list[str]]] = None
 
     @property
     def address(self) -> str:
@@ -142,6 +147,8 @@ class ServerConnection:
             )
             self.mms_context = request.mms_context
             self.iso.send(accept)
+            self.iso.settimeout(None)  # associated: requests may come at any pace
+            self.iso.max_tsdu = self.pdu_size + _ENVELOPE
             threading.Thread(target=self._write_loop, name=f"mms-{self.address}-tx", daemon=True).start()
             while not self.closed.is_set():
                 user_data = self.iso.recv()
@@ -192,7 +199,7 @@ class ServerConnection:
             object_class, domain, after = protocol.get_name_list_request(content)
             if domain is not None and domain not in model.logical_devices:
                 return protocol.confirmed_error(invoke, ERROR_DEFINITION, _OBJECT_UNDEFINED)
-            names = self.server.names(object_class, domain)
+            names = self._name_list(object_class, domain, after)
             start = bisect.bisect_right(names, after) if after is not None else 0
             page, room = [], self.pdu_size - 64
             for name in names[start:]:
@@ -217,9 +224,13 @@ class ServerConnection:
             return protocol.confirmed_response(invoke, service, protocol.read_response([self._read(v) for v in variables]))
         if service == pdu.SERVICE_WRITE:
             variables, values = protocol.write_request(content)
-            if isinstance(variables, ObjectName):
-                members = model.data_sets.get(variables, [])
-                variables = members
+            if isinstance(variables, ObjectName):  # a data set
+                data_set = model.data_sets.get(variables)
+                if data_set is None:
+                    return protocol.confirmed_error(invoke, ERROR_DEFINITION, _OBJECT_UNDEFINED)
+                variables = data_set
+            if len(variables) != len(values):
+                raise ValueError(f"{len(variables)} variables, {len(values)} values")  # a reject, invalid-argument
             errors = [self._write(name, value) for name, value in zip(variables, values)]
             return protocol.confirmed_response(invoke, service, protocol.write_response(errors))
         if service == pdu.SERVICE_GET_VARIABLE_ACCESS_ATTRIBUTES:
@@ -233,6 +244,13 @@ class ServerConnection:
                 return protocol.confirmed_error(invoke, ERROR_DEFINITION, _OBJECT_UNDEFINED)
             return protocol.confirmed_response(invoke, service, protocol.get_named_variable_list_attributes_response(members))
         return protocol.reject(invoke, reason=1, code=1)  # unrecognized-service
+
+    def _name_list(self, object_class: int, domain: Optional[str], after: Optional[str]) -> list[str]:
+        """What GetNameList lists: made at the first page, kept for the pages that follow (continueAfter)."""
+        key = (object_class, domain)
+        if after is None or self._names is None or self._names[0] != key:
+            self._names = (key, self.server.names(object_class, domain))
+        return self._names[1]
 
     def _read(self, name: ObjectName) -> Union[IECData, int]:
         for hook in self.server.read_hooks:
@@ -257,15 +275,19 @@ class MmsServer:
     ``report_buffer_bytes`` bounds each BRCB's buffer, in encoded values and
     reasons (:mod:`.reporting`). ``send_timeout``, ``send_queue_bytes`` and
     ``keepalive`` (seconds, None for the system's TCP defaults) drop clients
-    that stop reading or vanish (module notes).
+    that stop reading or vanish (module notes). ``association_timeout``
+    (seconds, None for none) drops a connection that has not completed COTP
+    and the association by then.
     """
 
     def __init__(self, model: IedModel, host: str = "0.0.0.0", port: int = 102, *, vendor: str = "open61850",
                  model_name: str = "open61850", revision: str = __version__, max_pdu_size: int = 65000,
                  max_outstanding: int = 5, nesting_level: int = 10, reports: bool = True, controls: bool = True,
                  setting_groups: bool = True, report_buffer_bytes: int = BUFFER_BYTES, send_timeout: float = 10.0,
-                 send_queue_bytes: int = 16 << 20, keepalive: Optional[float] = 20.0) -> None:
+                 send_queue_bytes: int = 16 << 20, keepalive: Optional[float] = 20.0,
+                 association_timeout: Optional[float] = 10.0) -> None:
         self.model = model
+        self.association_timeout = association_timeout
         self.report_buffer_bytes = report_buffer_bytes
         self.send_timeout, self.send_queue_bytes, self.keepalive = send_timeout, send_queue_bytes, keepalive
         self.host = host
@@ -315,24 +337,27 @@ class MmsServer:
         sock.listen(16)
         self.port = sock.getsockname()[1]
         self._sock = sock
-        self._thread = threading.Thread(target=self._accept_loop, name="mms-server", daemon=True)
+        self._thread = threading.Thread(target=self._accept_loop, args=(sock,), name="mms-server", daemon=True)
         self._thread.start()
 
-    def _accept_loop(self) -> None:
-        sock = self._sock  # stop() forgets it: the loop keeps its own
-        assert sock is not None
+    def _accept_loop(self, sock: socket.socket) -> None:
         while True:
             try:
                 client, peer = sock.accept()
-            except OSError:
-                return  # closed by stop()
+            except OSError as exc:
+                if self._sock is not sock or exc.errno in (errno.EBADF, errno.EINVAL):
+                    return  # closed by stop()
+                time.sleep(0.1)  # EMFILE, ENOBUFS, ECONNABORTED...: the next connection may well be accepted
+                continue
             threading.Thread(target=self._serve, args=(client, peer), name=f"mms-{peer[0]}", daemon=True).start()
 
     def _serve(self, client: socket.socket, peer: tuple) -> None:
         try:
             client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._watch(client)
+            client.settimeout(self.association_timeout)  # back to blocking once associated
             iso = protocol.accept_cotp(client)
+            iso.max_tsdu = _BEFORE_ASSOCIATION
         except (TransportError, OSError):
             client.close()
             return
@@ -378,14 +403,14 @@ class MmsServer:
                 connection.close()
 
     def stop(self) -> None:
-        if self._sock is not None:
+        sock, self._sock = self._sock, None  # first: the accept loop then knows an error is the end
+        if sock is not None:
             try:
                 # On Linux close() alone leaves the thread in accept() and the port bound.
-                self._sock.shutdown(socket.SHUT_RDWR)
+                sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self._sock.close()
-            self._sock = None
+            sock.close()
         for connection in list(self.connections):
             connection.close()
         if self._thread is not None:

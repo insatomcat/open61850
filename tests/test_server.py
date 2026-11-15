@@ -678,3 +678,73 @@ def test_a_conclude_is_answered_before_the_close(server: MmsServer) -> None:
         assert isinstance(decode_pdu(unwrap(answer[3:])), ConcludeResponse)
         assert transport.recv_tpkt(sock) is None  # then closed
         sock.close()
+
+
+def test_the_accept_loop_goes_on_after_an_accept_error(model: IedModel) -> None:
+    """EMFILE, ECONNABORTED...: one failed accept() stopped the server from accepting for good."""
+    listening = socket.create_server(("127.0.0.1", 0))
+    calls = []
+
+    class Flaky:
+        def accept(self) -> tuple[socket.socket, tuple]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError(24, "Too many open files")
+            return listening.accept()
+
+        def shutdown(self, how: int) -> None:
+            listening.shutdown(how)
+
+        def close(self) -> None:
+            listening.close()
+
+    server = MmsServer(model, "127.0.0.1", 0, reports=False, controls=False)
+    flaky = Flaky()
+    server._sock = flaky  # type: ignore[assignment]
+    server._thread = threading.Thread(target=server._accept_loop, args=(flaky,), daemon=True)
+    server._thread.start()
+    with MmsClient.connect("127.0.0.1", listening.getsockname()[1]) as client:
+        assert client.is_connected and len(calls) >= 2  # served after the failed accept()
+    server.stop()  # the loop ends: stop() joined it
+
+
+def test_a_connection_that_never_associates_is_dropped(model: IedModel) -> None:
+    with MmsServer(model, "127.0.0.1", 0, association_timeout=0.2) as server:
+        server.start()
+        silent = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        start = time.monotonic()
+        assert silent.recv(1) == b""  # closed by the server
+        assert time.monotonic() - start < 2
+        silent.close()
+        with MmsClient.connect("127.0.0.1", server.port) as client:  # an association that completes stays
+            time.sleep(0.4)
+            assert client.read(f"{PROT}/LLN0.Mod.stVal[ST]") == IntData(0)
+
+
+def test_a_tsdu_that_never_ends_is_refused(server: MmsServer) -> None:
+    from open61850.mms import transport
+
+    sock = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+    transport.send_tpkt(sock, transport.connection_request())
+    assert transport.recv_tpkt(sock)[1] & 0xF0 == 0xD0  # CC
+    try:
+        for _ in range(100):  # 100 KB of DT TPDUs, none with EOT
+            transport.send_tpkt(sock, b"\x02\xf0\x00" + bytes(1000))
+    except OSError:
+        pass  # the server closed the connection while we were still sending
+    try:
+        assert sock.recv(1) == b""
+    except ConnectionResetError:
+        pass  # closed with our data unread: a reset
+    sock.close()
+
+
+def test_writes_to_an_unknown_data_set_or_with_too_few_values_are_refused(server: MmsServer) -> None:
+    with MmsClient.connect("127.0.0.1", server.port) as client:
+        unknown = ber.encode_tlv(0xA1, pdu.encode_object_name(ObjectName("LLN0$NOPE", PROT)))
+        data = ber.encode_tlv(0xA0, __import__("open61850").data.encode_data(BoolData(True)))
+        with pytest.raises(ServiceError):
+            client.request(ber.encode_tlv(0xA5, unknown + data))
+        names = pdu._variable_list([ObjectName("LLN0$CF$Mod$ctlModel", PROT), ObjectName("LLN0$ST$Mod$stVal", PROT)])
+        with pytest.raises(MmsReject):
+            client.request(ber.encode_tlv(0xA5, names + data))

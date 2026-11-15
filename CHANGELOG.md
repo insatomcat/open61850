@@ -18,6 +18,15 @@
   again): a sqNum that goes back with another t, or by more than 16, is a
   RESTART. Every message was OUT_OF_ORDER and dropped until the sqNum
   passed the old one, and each took one off the missed count.
+- The MMS server goes on accepting after a failed `accept()` (EMFILE,
+  ECONNABORTED): one such error stopped it for good. A connection that
+  has not associated within `association_timeout` (10 s by default) is
+  dropped, and a TSDU that never ends is refused (64 KiB before the
+  association, the agreed PDU size after; `IsoConnection.max_tsdu`):
+  either held a thread, or memory, without end. A write to a data set
+  the server does not have is answered object-undefined (it was a
+  success with no result), one with fewer values than variables is
+  rejected. A GetNameList's names are made once for all its pages.
 
 ## 0.9.28 (2026-11-11)
 
