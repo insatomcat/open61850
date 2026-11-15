@@ -88,6 +88,39 @@ def test_publish_checks_and_frame() -> None:
     assert (eth.app_id, eth.vlan_id, eth.vlan_priority, pdu.time_allowed_to_live) == (1, 10, 4, 123)
 
 
+def test_repetitions_are_the_octets_of_the_encoder() -> None:
+    """A state is encoded once; each repetition only puts its timeAllowedtoLive and sqNum in."""
+    pub = GoosePublisher("unused", CONTROL, [BoolData(False), FloatData(1.5)], send=lambda _f: None)
+    for st, values in ((1, [BoolData(False), FloatData(1.5)]), (2, [BoolData(True), FloatData(-2.0)])):
+        pub._values = values
+        pub.st_num = st
+        for sq, tal in ((0, 30), (1, 60), (300, 240), (0xFFFFFFFF, 240)):
+            pub.sq_num = sq
+            c = CONTROL
+            expected = goose.encode_goose_frame(
+                goose.GoosePDU(c.gocb_ref, tal, c.dat_set, c.go_id, pub._t, st, sq, c.simulation, c.conf_rev,
+                               c.nds_com, len(values), values, c.time_quality),
+                dst_mac=c.dst_mac, src_mac=c.src_mac, app_id=c.app_id, vlan_id=c.vlan_id, vlan_priority=c.vlan_priority)
+            assert pub.frame(tal) == expected
+
+
+def test_no_burst_after_the_publisher_stood_still() -> None:
+    """Held for 300 ms with a message every 20 ms: one message, then the schedule from there."""
+    recorder = Recorder()
+    control = GooseControl(CONTROL.gocb_ref, CONTROL.dat_set, 1, CONTROL.dst_mac, CONTROL.src_mac,
+                           min_time_ms=20, max_time_ms=20)
+    with GoosePublisher("unused", control, [BoolData(False)], send=recorder) as pub:
+        pub.start()
+        time.sleep(0.1)
+        with pub._cond:  # the thread cannot run
+            time.sleep(0.3)
+            released = time.monotonic()
+        time.sleep(0.1)
+    after = [t for t, _f in recorder.frames if t >= released]
+    assert after and sum(1 for t in after if t < released + 0.01) == 1  # without the fix: about 15 at once
+    assert 0.018 < after[1] - after[0] < 0.05
+
+
 def test_parse_values() -> None:
     assert parse_values("true, FALSE, 12, -0x10, 0.5, 'a b'") == [
         BoolData(True), BoolData(False), IntData(12), IntData(-16), FloatData(0.5), VisibleStringData("a b"),

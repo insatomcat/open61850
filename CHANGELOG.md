@@ -36,6 +36,11 @@
   frame made by hand. `PcapWriter` and the Python SV receiver use it.
   `CaptureStats.received` no longer counts the dropped frames: the
   kernel adds them to the packet count it hands over.
+- `GoosePublisher` encodes a state once: a repetition only puts its
+  timeAllowedtoLive and sqNum in (3 us where it took 31 for 10 entries,
+  same octets). After standing still for longer than a whole interval (a
+  suspended VM, a debugger) it sends one message and starts the schedule
+  again, where it sent every missed message at once.
 
 ## 0.9.28 (2026-11-11)
 

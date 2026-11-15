@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import goose
+from . import ethernet, goose
 from .data import BoolData, FloatData, IECData, IntData, VisibleStringData
 
 __all__ = [
@@ -112,20 +112,32 @@ class GoosePublisher:
         # The repetition schedule, shared by the thread and publish(send_now=True).
         self._intervals: Iterator[int] = retransmission_intervals(control.min_time_ms, control.max_time_ms)
         self._due = time.monotonic()
+        # The state's fields encoded once for all its repetitions: (stNum, t, values) and the parts.
+        self._parts: Optional[tuple[tuple[int, datetime, int], tuple[bytes, bytes, bytes]]] = None
 
     # --- state -----------------------------------------------------------------
 
     def frame(self, time_allowed_to_live: int) -> bytes:
-        """The frame of the current stNum and sqNum."""
+        """The frame of the current stNum and sqNum.
+
+        A state's fields other than timeAllowedtoLive and sqNum are encoded once, at its first message:
+        its repetitions only put those two in (the octets of :func:`goose.encode_goose_frame`).
+        """
         c = self.control
-        pdu = goose.GoosePDU(
-            gocb_ref=c.gocb_ref, time_allowed_to_live=time_allowed_to_live, dat_set=c.dat_set, go_id=c.go_id,
-            timestamp=self._t, st_num=self.st_num, sq_num=self.sq_num, simulation=c.simulation,
-            conf_rev=c.conf_rev, nds_com=c.nds_com, num_dat_set_entries=len(self._values),
-            all_data=list(self._values), time_quality=c.time_quality,
+        key = (self.st_num, self._t, id(self._values))
+        if self._parts is None or self._parts[0] != key:
+            pdu = goose.GoosePDU(
+                gocb_ref=c.gocb_ref, time_allowed_to_live=0, dat_set=c.dat_set, go_id=c.go_id,
+                timestamp=self._t, st_num=self.st_num, sq_num=0, simulation=c.simulation,
+                conf_rev=c.conf_rev, nds_com=c.nds_com, num_dat_set_entries=len(self._values),
+                all_data=list(self._values), time_quality=c.time_quality,
+            )
+            self._parts = (key, goose._state_parts(pdu))
+        return ethernet.build_frame(
+            dst_mac=c.dst_mac, src_mac=c.src_mac, ethertype=ethernet.ETHERTYPE_GOOSE, app_id=c.app_id,
+            apdu=goose._assemble(self._parts[1], time_allowed_to_live, self.sq_num),
+            vlan_id=c.vlan_id, vlan_priority=c.vlan_priority,
         )
-        return goose.encode_goose_frame(pdu, dst_mac=c.dst_mac, src_mac=c.src_mac, app_id=c.app_id,
-                                        vlan_id=c.vlan_id, vlan_priority=c.vlan_priority)
 
     @property
     def values(self) -> list[IECData]:
@@ -205,10 +217,18 @@ class GoosePublisher:
             self.send_errors += 1
 
     def _send_due(self) -> None:
-        """Send the message now due and schedule the next (the condition held)."""
+        """Send the message now due and schedule the next (the condition held).
+
+        The schedule counts from the state's first message, so a late message makes the next leave at once. One
+        later than a whole interval (the process stood still, a debugger, a suspended VM) starts the schedule
+        again from now: the messages missed are not sent in a burst.
+        """
         interval = next(self._intervals)
         self._transmit(interval)
         self._due += interval / 1000
+        now = time.monotonic()
+        if self._due < now:  # this message counts as sent on time now: the next one an interval later
+            self._due = now + interval / 1000
         self._next_sq()
 
     def _run(self) -> None:

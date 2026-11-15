@@ -241,33 +241,43 @@ def _check_strict_data(all_data: bytes) -> None:
 
 def encode_goose_pdu(pdu: GoosePDU) -> bytes:
     """Encode a :class:`GoosePDU` into an ``IECGoosePdu``."""
+    return _assemble(_state_parts(pdu), pdu.time_allowed_to_live, pdu.sq_num)
+
+
+def _ctx(number: int, content: bytes, constructed: bool = False) -> bytes:
+    return ber.encode_tlv(ber.make_tag(number, constructed=constructed), content)
+
+
+def _state_parts(pdu: GoosePDU) -> tuple[bytes, bytes, bytes]:
+    """The fields around timeAllowedtoLive and sqNum, encoded: what a state's repetitions share
+    (gocbRef; datSet to stNum; simulation to allData)."""
     for item in pdu.all_data:
         if not isinstance(item, DATA_TYPES):
             raise TypeError(f"allData items must be IEC 61850 Data values, got {item!r}")
-
-    def ctx(number: int, content: bytes, constructed: bool = False) -> bytes:
-        return ber.encode_tlv(ber.make_tag(number, constructed=constructed), content)
-
-    parts = [
-        ctx(_GOCB_REF, pdu.gocb_ref.encode("ascii")),
-        ctx(_TAL, ber.encode_unsigned(pdu.time_allowed_to_live)),
-        ctx(_DAT_SET, pdu.dat_set.encode("ascii")),
-    ]
+    head = _ctx(_GOCB_REF, pdu.gocb_ref.encode("ascii"))
+    middle = [_ctx(_DAT_SET, pdu.dat_set.encode("ascii"))]
     if pdu.go_id is not None:
-        parts.append(ctx(_GO_ID, pdu.go_id.encode("ascii")))
+        middle.append(_ctx(_GO_ID, pdu.go_id.encode("ascii")))
     timestamp = pdu.timestamp if pdu.timestamp.tzinfo else pdu.timestamp.replace(tzinfo=timezone.utc)
-    parts += [
-        ctx(_T, encode_utc_time(timestamp, pdu.time_quality)),
-        ctx(_ST_NUM, ber.encode_unsigned(pdu.st_num)),
-        ctx(_SQ_NUM, ber.encode_unsigned(pdu.sq_num)),
-        ctx(_SIMULATION, ber.encode_boolean(pdu.simulation)),
-        ctx(_CONF_REV, ber.encode_unsigned(pdu.conf_rev)),
-        ctx(_NDS_COM, ber.encode_boolean(pdu.nds_com)),
-        ctx(_NUM_ENTRIES, ber.encode_unsigned(pdu.num_dat_set_entries)),
+    middle += [
+        _ctx(_T, encode_utc_time(timestamp, pdu.time_quality)),
+        _ctx(_ST_NUM, ber.encode_unsigned(pdu.st_num)),
     ]
-    # allData is not OPTIONAL in IEC 61850-8-1: an empty data set is written as ab 00.
-    parts.append(ctx(_ALL_DATA, b"".join(encode_data(d) for d in pdu.all_data), constructed=True))
-    return ber.encode_tlv(TAG_GOOSE_PDU, b"".join(parts))
+    tail = [
+        _ctx(_SIMULATION, ber.encode_boolean(pdu.simulation)),
+        _ctx(_CONF_REV, ber.encode_unsigned(pdu.conf_rev)),
+        _ctx(_NDS_COM, ber.encode_boolean(pdu.nds_com)),
+        _ctx(_NUM_ENTRIES, ber.encode_unsigned(pdu.num_dat_set_entries)),
+        # allData is not OPTIONAL in IEC 61850-8-1: an empty data set is written as ab 00.
+        _ctx(_ALL_DATA, b"".join(encode_data(d) for d in pdu.all_data), constructed=True),
+    ]
+    return head, b"".join(middle), b"".join(tail)
+
+
+def _assemble(parts: tuple[bytes, bytes, bytes], time_allowed_to_live: int, sq_num: int) -> bytes:
+    head, middle, tail = parts
+    return ber.encode_tlv(TAG_GOOSE_PDU, head + _ctx(_TAL, ber.encode_unsigned(time_allowed_to_live)) + middle
+                          + _ctx(_SQ_NUM, ber.encode_unsigned(sq_num)) + tail)
 
 
 def encode_goose_frame(
