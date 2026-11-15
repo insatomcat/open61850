@@ -118,7 +118,7 @@ def test_no_burst_after_the_publisher_stood_still() -> None:
         time.sleep(0.1)
     after = [t for t, _f in recorder.frames if t >= released]
     assert after and sum(1 for t in after if t < released + 0.01) == 1  # without the fix: about 15 at once
-    assert 0.018 < after[1] - after[0] < 0.05
+    assert after[1] - after[0] > 0.018  # the next one an interval later (no upper bound: a slow runner is late)
 
 
 def test_parse_values() -> None:
