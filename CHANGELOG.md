@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `MmsClient` survives a report callback or listener that raises: the
+  exception killed its receive thread, the client still said it was
+  connected and every request after it timed out. The exception is
+  counted (`callback_errors`, `last_callback_error`) and the other
+  callbacks still run. A PDU that does not decode no longer ends the
+  association: the request it answers fails at once with
+  `MmsProtocolError` when its invokeID can be read (`undecodable`).
+
 ## 0.9.28 (2026-11-11)
 
 - A capture whose socket holds an error (ENETDOWN, when it was bound

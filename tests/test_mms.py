@@ -34,6 +34,7 @@ from open61850.mms import (
     InformationReport,
     MmsClient,
     MmsConnectionError,
+    MmsProtocolError,
     MmsReject,
     MmsTimeout,
     ObjectName,
@@ -357,6 +358,41 @@ def test_errors(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
     with pytest.raises(MmsTimeout):
         client.read(ObjectName("silent", "LD0"))
     assert client.is_connected
+
+
+def test_a_failing_report_callback_stops_neither_the_listeners_nor_the_client(
+        serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    def handler(invoke_id: int, service: int, content: bytes, server: FakeServer) -> None:
+        rpt = ber.encode_tlv(0xA1, ber.encode_tlv(0x80, b"RPT")) + ber.encode_tlv(0xA0, encode_data(BoolData(True)))
+        server.send_mms(ber.encode_tlv(0xA3, ber.encode_tlv(0xA0, rpt)))
+        server.respond(invoke_id, service, _read_ok([encode_data(UIntData(1))]))
+
+    def broken(_report: InformationReport) -> None:
+        raise KeyError("a bug of the application")
+
+    seen: list[InformationReport] = []
+    client, _ = serve(handler, on_report=broken)
+    client.add_report_listener(seen.append)
+    assert client.read(ObjectName("X", "LD0")) == UIntData(1)
+    assert client.read(ObjectName("X", "LD0")) == UIntData(1)  # the receive thread still runs
+    assert len(seen) == 2 and client.callback_errors == 2 and isinstance(client.last_callback_error, KeyError)
+    assert client.is_connected
+
+
+def test_an_undecodable_response_fails_its_request_only(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:
+    def handler(invoke_id: int, service: int, content: bytes, server: FakeServer) -> None:
+        if _read_names(content)[0].item == "broken":  # a confirmed response without its service
+            server.send_mms(ber.encode_tlv(0xA1, ber.encode_tlv(0x02, ber.encode_unsigned(invoke_id))))
+        else:
+            server.respond(invoke_id, service, _read_ok([encode_data(UIntData(2))]))
+
+    client, _ = serve(handler)
+    start = time.monotonic()
+    with pytest.raises(MmsProtocolError):
+        client.read(ObjectName("broken", "LD0"))
+    assert time.monotonic() - start < 1  # at once, without waiting for the timeout
+    assert client.read(ObjectName("X", "LD0")) == UIntData(2)
+    assert client.is_connected and client.undecodable == 1
 
 
 def test_connection_loss_fails_pending_requests(serve: Callable[..., tuple[MmsClient, FakeServer]]) -> None:

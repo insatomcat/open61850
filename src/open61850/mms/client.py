@@ -9,7 +9,10 @@ threads), up to the number the server accepted at association time (see
 :attr:`MmsClient.association`); informationReports go to the ``on_information_report`` callback
 and to the listeners added with :meth:`MmsClient.add_report_listener`.
 Callbacks run on the receive thread: keep them short or hand the work to a
-queue.
+queue. An exception a callback raises is counted (:attr:`MmsClient.callback_errors`,
+the last one in :attr:`MmsClient.last_callback_error`) and the other callbacks
+still run. A PDU that does not decode fails the request it answers, when its
+invokeID can be read, and the association goes on (:attr:`MmsClient.undecodable`).
 
 Example::
 
@@ -27,6 +30,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .. import ber
 from ..data import IECData
 from . import pdu
 from .association import Association, AssociationParameters, association_request, decode_association_response
@@ -81,6 +85,9 @@ class MmsClient:
         self._closed = threading.Event()
         self._close_reason: Optional[BaseException] = None
         self._receiver: Optional[threading.Thread] = None
+        self.callback_errors = 0  # exceptions raised by report callbacks and listeners
+        self.last_callback_error: Optional[BaseException] = None
+        self.undecodable = 0  # PDUs received that did not decode
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -153,21 +160,45 @@ class MmsClient:
                 user_data = self._conn.recv()
                 if user_data is None:
                     break
-                self._dispatch(pdu.decode_pdu(pdu.unwrap(user_data)))
+                mms_pdu = pdu.unwrap(user_data)  # no MMS data transfer: the association is gone
+                try:
+                    incoming = pdu.decode_pdu(mms_pdu)
+                except MmsProtocolError as exc:
+                    self._undecodable(mms_pdu, exc)
+                    continue
+                self._dispatch(incoming)
         except (OSError, MmsProtocolError) as exc:
             if not self._closed.is_set():
                 reason = MmsConnectionError(f"connection lost: {exc}")
-        self._fail_all(reason)
-        self._conn.close()
+        except Exception as exc:  # a bug here must not leave the client looking connected
+            reason = MmsConnectionError(f"receive thread failed: {exc!r}")
+        finally:
+            self._fail_all(reason)
+            self._conn.close()
+
+    def _undecodable(self, mms_pdu: bytes, error: MmsProtocolError) -> None:
+        """A PDU the client cannot read: the request it answers fails with ``error``, the association goes on."""
+        self.undecodable += 1
+        invoke_id = _invoke_id_of(mms_pdu)
+        if invoke_id is None:
+            return
+        with self._lock:
+            pending = self._pending.pop(invoke_id, None)
+        if pending is not None:
+            pending.error = error
+            pending.done.set()
 
     def _dispatch(self, incoming: pdu.IncomingPdu) -> None:
         if isinstance(incoming, InformationReport):
             with self._lock:
                 listeners = list(self._listeners)
-            if self._on_report is not None:
-                self._on_report(incoming)
-            for listener in listeners:
-                listener(incoming)
+            callbacks = ([self._on_report] if self._on_report is not None else []) + listeners
+            for callback in callbacks:
+                try:
+                    callback(incoming)
+                except Exception as exc:  # one callback's bug stops neither the others nor the client
+                    self.callback_errors += 1
+                    self.last_callback_error = exc
             return
         invoke_id = getattr(incoming, "invoke_id", None)
         if invoke_id is None:
@@ -310,6 +341,19 @@ class MmsClient:
             pdu.SERVICE_GET_NAMED_VARIABLE_LIST_ATTRIBUTES,
         )
         return pdu.get_named_variable_list_attributes_response(content)
+
+
+def _invoke_id_of(mms_pdu: bytes) -> Optional[int]:
+    """The invokeID of a confirmed response, error or reject that does not decode, when it can be read."""
+    try:
+        outer = ber.decode_tlv(mms_pdu)
+        if outer.tag in (pdu.TAG_CONFIRMED_RESPONSE, pdu.TAG_CONFIRMED_ERROR, pdu.TAG_REJECT):
+            first = ber.decode_tlv(outer.value)
+            if first.tag in (0x02, 0x80):
+                return ber.decode_unsigned(first.value)
+    except ber.BerError:
+        pass
+    return None
 
 
 def _recv_with_timeout(conn: IsoConnection, timeout: float) -> Optional[bytes]:
