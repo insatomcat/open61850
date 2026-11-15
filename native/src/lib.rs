@@ -31,6 +31,8 @@ mod receiver;
 mod synchrophasor;
 
 const NS_PER_S: i64 = 1_000_000_000;
+/// A frame sent this late (ns) makes the engine skip to the frame now due (`sv_publisher.RESYNC_NS`).
+const RESYNC_NS: i64 = NS_PER_S;
 
 #[derive(Clone)]
 struct Wave {
@@ -195,9 +197,19 @@ struct Stream {
 impl Stream {
     /// Fills the frame; returns the samples sent past the trajectory's last point.
     /// `shift` and `synch` (-1: the template's) come from the clock (`render_frame`).
-    fn render(&self, buf: &mut [u8], second: i64, first_smp: i64, rate: i64, shift: i64, synch: i32) -> u64 {
+    /// `phasors` is the caller's, kept from frame to frame: no allocation once it has its size.
+    #[allow(clippy::too_many_arguments)]
+    fn render(
+        &self,
+        buf: &mut [u8],
+        second: i64,
+        first_smp: i64,
+        rate: i64,
+        shift: i64,
+        synch: i32,
+        phasors: &mut Vec<(f64, f64)>,
+    ) -> u64 {
         let mut underruns = 0;
-        let mut phasors: Vec<(f64, f64)> = Vec::new();
         for (i, (&smp_at, &sample_at)) in self.smp_offsets.iter().zip(&self.sample_offsets).enumerate() {
             let n = first_smp + i as i64;
             let sec = second + n.div_euclid(rate);
@@ -218,7 +230,7 @@ impl Stream {
             }
             if let Some(t) = &self.trajectory {
                 let mut underrun = false;
-                if t.values(sec, smp, rate, shift, &mut phasors, &mut underrun) {
+                if t.values(sec, smp, rate, shift, phasors, &mut underrun) {
                     underruns += underrun as u64;
                     for (ch, (&(m, angle), w)) in phasors.iter().zip(&self.waves).enumerate() {
                         let at = sample_at + 8 * ch;
@@ -318,8 +330,10 @@ impl Clock {
         Ok(())
     }
 
+    /// The state after `current`, found by bisection: every frame asks, and states are never removed.
     fn next_after(&self, current: &ClockState) -> Option<ClockState> {
-        self.states.lock().unwrap().iter().find(|s| s.at > current.at).copied()
+        let states = self.states.lock().unwrap();
+        states.get(states.partition_point(|s| s.at <= current.at)).copied()
     }
 
     /// The state at the start and the first sample number (`_clock_start`).
@@ -354,6 +368,7 @@ struct Counters {
     late_frames: AtomicU64,
     max_lateness_ns: AtomicI64,
     trajectory_underruns: AtomicU64,
+    skipped_frames: AtomicU64,
 }
 
 struct Config {
@@ -537,7 +552,7 @@ impl Engine {
         let s = self.config.streams.get(stream).ok_or_else(|| PyValueError::new_err("no such stream"))?;
         let mut buf = s.frame.clone();
         let synch = smp_synch.map_or(-1, i32::from);
-        let underruns = s.render(&mut buf, second, first_smp, self.config.rate, shift_ns, synch);
+        let underruns = s.render(&mut buf, second, first_smp, self.config.rate, shift_ns, synch, &mut Vec::new());
         self.counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
         Ok(PyBytes::new(py, &buf))
     }
@@ -610,6 +625,7 @@ impl Engine {
         d.set_item("late_frames", c.late_frames.load(Ordering::Relaxed))?;
         d.set_item("max_lateness_ns", c.max_lateness_ns.load(Ordering::Relaxed))?;
         d.set_item("trajectory_underruns", c.trajectory_underruns.load(Ordering::Relaxed))?;
+        d.set_item("skipped_frames", c.skipped_frames.load(Ordering::Relaxed))?;
         Ok(d)
     }
 }
@@ -714,6 +730,7 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
         m.msg_hdr.msg_iovlen = 1;
     }
     let period_ns = NS_PER_S * asdus / rate;
+    let mut phasors: Vec<(f64, f64)> = Vec::new();
 
     // Each deadline is computed from the sample number, so rounding never accumulates.
     let (mut state, mut n) = config.clock.start(config.start_second, rate);
@@ -724,7 +741,8 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
         // Fill before sleeping: the frame is ready when its time comes.
         let mut underruns = 0;
         for (stream, buf) in config.streams.iter().zip(buffers.iter_mut()) {
-            underruns += stream.render(buf, n.div_euclid(rate), n.rem_euclid(rate), rate, shift, state.synch);
+            underruns +=
+                stream.render(buf, n.div_euclid(rate), n.rem_euclid(rate), rate, shift, state.synch, &mut phasors);
         }
         if underruns > 0 {
             counters.trajectory_underruns.fetch_add(underruns, Ordering::Relaxed);
@@ -746,7 +764,11 @@ fn run(fd: i32, config: &Config, counters: &Counters, ready: mpsc::Sender<Result
         if lateness > period_ns {
             counters.late_frames.fetch_add(sent as u64, Ordering::Relaxed);
         }
-        n += asdus;
+        // More than a second late (a start in the past, a stop, the clock stepped forward): skip to the frame
+        // now due instead of sending every frame in between at once.
+        let skip = if lateness > RESYNC_NS { lateness / period_ns } else { 0 };
+        counters.skipped_frames.fetch_add(skip as u64, Ordering::Relaxed);
+        n += asdus * (1 + skip);
     }
     // SAFETY: the socket belongs to this thread.
     unsafe { libc::close(fd) };

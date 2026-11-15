@@ -30,6 +30,8 @@ type Scratch = (Vec<(usize, Vec<u8>)>, Vec<Vec<u8>>);
 struct Buf {
     data: Vec<u8>,
     count: usize,
+    // what take() hands `data` over with: an empty buffer of full capacity, swapped in under the lock
+    spare: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -191,7 +193,17 @@ impl Receiver {
                 ids: sv_ids,
                 channels,
                 capacity,
-                bufs: (0..n).map(|_| Mutex::new(Buf { data: Vec::with_capacity(size * 1024), count: 0 })).collect(),
+                // Full capacity from the start: the thread never grows a buffer (a copy under the lock). Memory
+                // not written yet is not resident.
+                bufs: (0..n)
+                    .map(|_| {
+                        Mutex::new(Buf {
+                            data: Vec::with_capacity(size * capacity),
+                            count: 0,
+                            spare: Vec::with_capacity(size * capacity),
+                        })
+                    })
+                    .collect(),
                 counts: (0..n).map(|_| AtomicUsize::new(0)).collect(),
                 needs: (0..n).map(|_| AtomicUsize::new(usize::MAX)).collect(),
                 waiting: AtomicBool::new(false),
@@ -219,13 +231,23 @@ impl Receiver {
         Ok(b.lock().unwrap().count)
     }
 
+    /// The records are swapped out under the lock and copied after it: the thread, which may run at
+    /// SCHED_FIFO, never waits for a copy of the whole buffer.
     fn take<'py>(&self, py: Python<'py>, stream: usize) -> PyResult<Bound<'py, PyBytes>> {
         let b = self.shared.bufs.get(stream).ok_or_else(|| PyIndexError::new_err("no such stream"))?;
+        let mut full = {
+            let mut g = b.lock().unwrap();
+            let spare = std::mem::take(&mut g.spare);
+            g.count = 0;
+            self.shared.counts[stream].store(0, Ordering::SeqCst);
+            std::mem::replace(&mut g.data, spare)
+        };
+        let out = PyBytes::new(py, &full);
+        full.clear();
         let mut g = b.lock().unwrap();
-        let out = PyBytes::new(py, &g.data);
-        g.data.clear();
-        g.count = 0;
-        self.shared.counts[stream].store(0, Ordering::SeqCst);
+        if g.spare.capacity() < full.capacity() {
+            g.spare = full;
+        }
         Ok(out)
     }
 

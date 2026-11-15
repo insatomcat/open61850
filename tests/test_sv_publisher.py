@@ -8,6 +8,7 @@ from __future__ import annotations
 import itertools
 import math
 import sys
+import threading
 import time
 from fractions import Fraction
 
@@ -532,3 +533,47 @@ def test_clock_change_within_a_frame_repeats_no_sample() -> None:
         labels += [n, n + 1]
         n += 2
     assert labels == list(range(labels[0], labels[0] + len(labels)))  # none skipped, none repeated
+
+
+def test_clock_finds_the_next_state_among_many() -> None:
+    states = [ClockState(at_ns=k * 1_000_000_000, offset_ns=k) for k in range(1, 5001)]
+    clock = Clock(states)
+    assert clock.next_after(TRUE_TIME) == states[0]
+    assert all(clock.next_after(states[k]) == states[k + 1] for k in range(0, 5000, 7))
+    assert clock.next_after(states[-1]) is None
+    assert clock.next_after(ClockState(at_ns=2_500_000_000)) == states[2]
+
+
+def test_python_engine_skips_ahead_after_a_long_delay() -> None:
+    """A frame sent more than a second late makes the engine skip to the frame now due: no burst."""
+    from open61850.sv_publisher import _PythonEngine
+
+    class Wire:
+        def __init__(self) -> None:
+            self.sent: list[tuple[float, bytes]] = []
+
+        def send(self, frame: bytes) -> None:
+            self.sent.append((time.time(), frame))
+
+        def __enter__(self) -> Wire:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            pass
+
+    rate = 400
+    stream = _stream(waves=three_phase(i_peak=10, v_peak=100))
+    start = int(time.time()) - 3  # three seconds late from the first frame
+    engine = _PythonEngine("lo", rate, 2, [stream], [build_template(stream, 2, rate)], start)
+    wire = Wire()
+    thread = threading.Thread(target=engine._run, args=(wire,))
+    thread.start()
+    time.sleep(0.3)
+    engine.stop()
+    thread.join(5)
+    stats = engine.stats()
+    assert 3 * rate // 2 <= stats["skipped_frames"] <= 4 * rate // 2
+    assert len(wire.sent) < 0.6 * rate // 2  # 0.3 s of frames, where the 600 behind went at once
+    when, frame = wire.sent[1]
+    pdu = sv.decode_sv_frame(frame)[1]  # type: ignore[index]
+    assert abs(when - (int(when) + pdu.asdus[0].smp_cnt / rate)) < 0.05  # the frame now due

@@ -127,6 +127,7 @@ class _PythonEngine:
         self.bufs: list[list[bytes]] = [[] for _ in sv_ids]
         self.stats = ReceiverStats(engine="python")
         self.cond = threading.Condition()
+        self.need: Optional[list[int]] = None  # what wait() waits for: feed() wakes it only once it is met
         self.stop_flag = False
         self.thread: Optional[threading.Thread] = None
         self.value_fmt = struct.Struct(f"={channels}i{channels}I")
@@ -177,8 +178,12 @@ class _PythonEngine:
                     self.bufs[k].append(rec)
                     kept += 1
             st.records += kept
-            self.cond.notify_all()
+            if kept and self.need is not None and self._ready(self.need):
+                self.cond.notify_all()
         return kept
+
+    def _ready(self, need: list[int]) -> bool:
+        return any(len(b) >= n for b, n in zip(self.bufs, need))
 
     def pending(self, k: int) -> int:
         with self.cond:
@@ -191,11 +196,12 @@ class _PythonEngine:
         return data
 
     def wait(self, need: list[int], timeout: Optional[float]) -> bool:
-        def ready() -> bool:
-            return any(len(b) >= n for b, n in zip(self.bufs, need))
-
         with self.cond:
-            return self.cond.wait_for(ready, timeout)
+            self.need = need
+            try:
+                return self.cond.wait_for(lambda: self._ready(need), timeout)
+            finally:
+                self.need = None
 
     def start(self, capture: Any) -> None:
         self.stop_flag = False

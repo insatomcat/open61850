@@ -348,3 +348,35 @@ def test_native_engine_follows_its_clock() -> None:
     assert counts[back - 1] == 3835
     assert {a.smp_synch for a in asdus[:2400]} == {2} and {a.smp_synch for a in asdus[2400:back]} == {1}
     assert {a.smp_synch for a in asdus[back:]} == {2}  # the stream's own again
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AF_PACKET is Linux only")
+def test_native_engine_skips_ahead_after_a_long_delay() -> None:
+    """Started three seconds late: the frames behind are skipped, where 7200 went out at once."""
+    from open61850.capture import PacketCapture
+
+    try:
+        cap = PacketCapture("lo", (0x88BA,), timeout=0.05, outgoing=False, buffer_bytes=16 << 20)
+    except PermissionError:
+        pytest.skip("needs CAP_NET_RAW")
+    rate = 4800
+    publisher = Publisher("lo", rate=rate, asdus_per_frame=2, engine="native")
+    publisher.add(SvStream("IED01_MU01_SV0", 0x4000, "01:0c:cd:04:00:01", "02:00:00:00:00:01",
+                           three_phase(i_peak=10, v_peak=100)))
+    with cap:
+        publisher.start(at_second=int(time.time()) - 3)
+        frames = []
+        end = time.time() + 0.5
+        while time.time() < end:
+            got = cap.recv()
+            if got is not None:
+                frames.append(got)
+        publisher.stop()
+    stats = publisher.stats()
+    assert 3 * rate // 2 <= stats.skipped_frames <= 4 * rate // 2
+    assert len(frames) < 0.7 * rate // 2  # half a second of frames
+    late = []
+    for f in frames[1:]:
+        pdu = sv.decode_sv_frame(f.data)[1]  # type: ignore[index]
+        late.append(f.timestamp - (int(f.timestamp) + pdu.asdus[0].smp_cnt / rate))
+    assert max(abs(x) for x in late if x > -0.5) < 0.01  # each at its time from the second frame on

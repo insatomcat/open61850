@@ -28,6 +28,12 @@ Two engines send the frames:
   as good as ``time.sleep``; it serves tests, low rates and platforms without
   the native engine.
 
+Both send each frame at its time, catching up at once on a frame they sent
+late. A frame sent more than a second late (a start second in the past, the
+process stopped, the system clock stepped forward) makes the engine skip to
+the frame now due: the frames between are counted
+(:attr:`PublisherStats.skipped_frames`), never sent in a burst.
+
 The frames themselves are built here in both cases: :func:`build_template`
 encodes a frame once with :mod:`open61850.sv` and records where smpCnt and
 the samples sit; :func:`render_frame` fills them in. The native engine
@@ -39,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import bisect
 import collections
 import dataclasses
 import math
@@ -64,6 +71,7 @@ __all__ = [
     "Clock",
     "ClockState",
     "TRUE_TIME",
+    "RESYNC_NS",
     "SvStream",
     "Template",
     "PublisherStats",
@@ -449,7 +457,7 @@ class Clock:
     """
 
     def __init__(self, states: Iterable[ClockState] = ()) -> None:
-        self._states: collections.deque[ClockState] = collections.deque()
+        self._states: list[ClockState] = []  # in increasing at_ns: found by bisection, every frame
         self._lock = threading.Lock()
         for st in states:
             self.set(st)
@@ -468,13 +476,17 @@ class Clock:
     def next_after(self, current: ClockState) -> Optional[ClockState]:
         """The state that follows ``current``."""
         with self._lock:
-            for st in self._states:
-                if st.at_ns > current.at_ns:
-                    return st
-        return None
+            i = bisect.bisect_right(self._states, current.at_ns, key=_at_ns)
+            return self._states[i] if i < len(self._states) else None
+
+
+def _at_ns(state: ClockState) -> int:
+    return state.at_ns
 
 
 TRUE_TIME = ClockState(at_ns=-(1 << 62))  # the clock before any state: true time
+# A frame sent this late (ns) makes an engine skip to the frame now due, where it would send every frame in between.
+RESYNC_NS = 1_000_000_000
 
 
 def _label_ns(n: int, rate: int) -> int:
@@ -716,6 +728,7 @@ class PublisherStats:
     late_frames: int = 0  # sent more than one frame period after their time
     max_lateness_ns: int = 0
     trajectory_underruns: int = 0  # samples sent past a trajectory's last point
+    skipped_frames: int = 0  # frames of each stream skipped after one sent more than RESYNC_NS late
     engine: str = ""
 
 
@@ -817,7 +830,8 @@ class Publisher:
     def stats(self) -> PublisherStats:
         if self._runner is None:
             return PublisherStats(engine=self.engine_name)
-        return PublisherStats(**self._runner.stats(), engine=self.engine_name)
+        known = {f.name for f in dataclasses.fields(PublisherStats)}
+        return PublisherStats(**{k: v for k, v in self._runner.stats().items() if k in known}, engine=self.engine_name)
 
     def __enter__(self) -> Publisher:
         return self
@@ -919,7 +933,7 @@ class _PythonEngine:
         self.clock = clock if clock is not None else Clock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._stats = {"frames_sent": 0, "send_errors": 0, "late_frames": 0, "max_lateness_ns": 0}
+        self._stats = {"frames_sent": 0, "send_errors": 0, "late_frames": 0, "max_lateness_ns": 0, "skipped_frames": 0}
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -967,7 +981,9 @@ class _PythonEngine:
                     s["max_lateness_ns"] = max(s["max_lateness_ns"], lateness)
                     if lateness > period_ns:
                         s["late_frames"] += sent
-                n += self.asdus
+                    skip = lateness // period_ns if lateness > RESYNC_NS else 0
+                    s["skipped_frames"] += skip
+                n += self.asdus * (1 + skip)
 
 
 # --- command line ------------------------------------------------------------

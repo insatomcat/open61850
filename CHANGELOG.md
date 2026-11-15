@@ -41,6 +41,23 @@
   same octets). After standing still for longer than a whole interval (a
   suspended VM, a debugger) it sends one message and starts the schedule
   again, where it sent every missed message at once.
+- The SV publisher (both engines) skips to the frame now due after
+  sending one more than a second late (`RESYNC_NS`), and counts the frames
+  skipped (`PublisherStats.skipped_frames`). A start second in the past, a
+  stopped process or the system clock stepped forward (ptp4l, NTP) made
+  it send every frame in between at line rate: 7200 frames per stream for
+  three seconds at 4800 samples/s.
+- The merging unit clock finds its next state by bisection: both engines
+  scanned every state at each frame, under the lock, in the real-time
+  thread, and states are never removed (one a second for ten hours made
+  the scan 36,000 states long). The native engine renders a trajectory
+  without allocating.
+- The native SV receiver hands its records over without holding the lock
+  its thread needs during the copy (a swap with a spare buffer), and
+  allocates its buffers at full capacity: the thread, at SCHED_FIFO, no
+  longer waits for a copy of up to `capacity` records or grows a buffer.
+  The Python receiver wakes a waiter only once its need is met, where it
+  woke it at every frame.
 
 ## 0.9.28 (2026-11-11)
 
