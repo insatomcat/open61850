@@ -48,11 +48,14 @@ __all__ = [
     "GooseControl",
     "GoosePublisher",
     "retransmission_intervals",
+    "RESYNC_S",
     "parse_values",
     "main",
 ]
 
 _UINT32_MAX = 0xFFFFFFFF
+# A message sent this late (s) starts the schedule again, where the messages missed would go out at once.
+RESYNC_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -220,14 +223,15 @@ class GoosePublisher:
         """Send the message now due and schedule the next (the condition held).
 
         The schedule counts from the state's first message, so a late message makes the next leave at once. One
-        later than a whole interval (the process stood still, a debugger, a suspended VM) starts the schedule
-        again from now: the messages missed are not sent in a burst.
+        more than :data:`RESYNC_S` late (the process stood still, a debugger, a suspended VM) starts the schedule
+        again from now: the messages missed are not sent in a burst. Below that the catching up stays bounded:
+        at most about log2(RESYNC_S / min_time) messages, the intervals doubling.
         """
         interval = next(self._intervals)
         self._transmit(interval)
         self._due += interval / 1000
         now = time.monotonic()
-        if self._due < now:  # this message counts as sent on time now: the next one an interval later
+        if now - self._due > RESYNC_S:  # this message counts as sent on time now: the next one an interval later
             self._due = now + interval / 1000
         self._next_sq()
 

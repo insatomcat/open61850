@@ -38,9 +38,9 @@
   kernel adds them to the packet count it hands over.
 - `GoosePublisher` encodes a state once: a repetition only puts its
   timeAllowedtoLive and sqNum in (3 us where it took 31 for 10 entries,
-  same octets). After standing still for longer than a whole interval (a
-  suspended VM, a debugger) it sends one message and starts the schedule
-  again, where it sent every missed message at once.
+  same octets). After standing still for more than a second (a suspended
+  VM, a debugger) it sends one message and starts the schedule again,
+  where it sent every missed message at once.
 - The SV publisher (both engines) skips to the frame now due after
   sending one more than a second late (`RESYNC_NS`), and counts the frames
   skipped (`PublisherStats.skipped_frames`). A start second in the past, a

@@ -105,7 +105,7 @@ def test_repetitions_are_the_octets_of_the_encoder() -> None:
 
 
 def test_no_burst_after_the_publisher_stood_still() -> None:
-    """Held for 300 ms with a message every 20 ms: one message, then the schedule from there."""
+    """Held for 1.3 s with a message every 20 ms: one message, then the schedule from there."""
     recorder = Recorder()
     control = GooseControl(CONTROL.gocb_ref, CONTROL.dat_set, 1, CONTROL.dst_mac, CONTROL.src_mac,
                            min_time_ms=20, max_time_ms=20)
@@ -113,11 +113,11 @@ def test_no_burst_after_the_publisher_stood_still() -> None:
         pub.start()
         time.sleep(0.1)
         with pub._cond:  # the thread cannot run
-            time.sleep(0.3)
+            time.sleep(1.3)
             released = time.monotonic()
         time.sleep(0.1)
     after = [t for t, _f in recorder.frames if t >= released]
-    assert after and sum(1 for t in after if t < released + 0.01) == 1  # without the fix: about 15 at once
+    assert after and sum(1 for t in after if t < released + 0.01) == 1  # without the fix: about 65 at once
     assert after[1] - after[0] > 0.018  # the next one an interval later (no upper bound: a slow runner is late)
 
 
