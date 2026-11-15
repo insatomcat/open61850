@@ -58,6 +58,10 @@
   longer waits for a copy of up to `capacity` records or grows a buffer.
   The Python receiver wakes a waiter only once its need is met, where it
   woke it at every frame.
+- The server's controls: a command in enhanced security that the
+  application ends with `finish()` before its handler has run (the object
+  is `executing()` from the Oper's acceptance) is no longer run after:
+  its handler started it again, and no termination ever followed.
 
 ## 0.9.28 (2026-11-11)
 

@@ -550,6 +550,36 @@ def test_control_shows_the_operation_received_and_given(switches: MmsServer) -> 
         assert terminated and terminated[0].terminated
 
 
+def test_a_command_finished_before_its_handler_runs_is_not_executed(switches: MmsServer,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """executing() is true from the Oper's acceptance: finish() may come before the handler of an enhanced command."""
+    from open61850.server.control import ControlEngine
+
+    calls: list = []
+    switches.controls.set_handler(f"{CTRL}/CSWI3.Pos", calls.append)
+    go = threading.Event()
+    terminate = ControlEngine._terminate
+
+    def held(self: ControlEngine, *args: object) -> None:
+        go.wait(5)
+        terminate(self, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ControlEngine, "_terminate", held)
+    with MmsClient.connect("127.0.0.1", switches.port) as client:
+        results: list = []
+        command = threading.Thread(target=lambda: results.append(operate(client, f"{CTRL}/CSWI3.Pos", True)))
+        command.start()
+        deadline = time.monotonic() + 5
+        while not switches.controls.executing(f"{CTRL}/CSWI3.Pos") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert switches.controls.finish(f"{CTRL}/CSWI3.Pos")
+        go.set()
+        command.join(5)
+        assert results and results[0].terminated  # finish()'s termination
+        time.sleep(0.1)
+        assert calls == [] and not switches.controls.executing(f"{CTRL}/CSWI3.Pos")
+
+
 def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:
     scd = (DATA_DIR / "controls.scd.xml").read_text().replace(
         '<BDA name="ctlVal" bType="BOOLEAN"/>\n      <BDA name="origin"',

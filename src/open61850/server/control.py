@@ -409,6 +409,10 @@ class ControlEngine:
         self._flag(command, "opRcvd", False)
 
     def _terminate(self, connection: object, name: ObjectName, command: Command, oper: IECData) -> None:
+        with self._lock:
+            current = self._executions.get((command.domain, command.object_item))
+            if current is None or current.command is not command:
+                return  # ended before it ran: finish() already sent its termination
         cause = self._run(connection, name, command, oper, True)
         if cause != IN_EXECUTION:
             self._send_termination(connection, name, command, oper, cause)
