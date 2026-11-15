@@ -247,6 +247,26 @@ def test_buffered_entries_replayed_from_entry_id(server: MmsServer, model: IedMo
         assert _reports(q, 0.2) == []  # purged
 
 
+def test_buffered_entries_replayed_after_the_last_sent_without_an_entry_id_write(server: MmsServer, model: IedModel) -> None:
+    """IEDscout enables a BRCB again with RptEna only: a VMC7 sends it what was buffered while it was away."""
+    q: queue.Queue = queue.Queue()
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        rcb.enable(client, BRCBS[0], rcb.RcbSettings(intg_pd_ms=0, purge_buf=True, resv_tms=2))
+        (gi,) = _reports(q, 0.1)
+    deadline = time.monotonic() + 2
+    while model.get(f"{PROT}/LLN0$BR$brcbTrip01$RptEna") == BoolData(True) and time.monotonic() < deadline:
+        time.sleep(0.01)  # the server has seen the client go
+    model.set(TRIP, True)
+    model.set(TRIP, False)
+    assert model.get(f"{PROT}/LLN0$BR$brcbTrip01$EntryID") == OctetStringData(gi.entry_id)  # the last one sent
+    with MmsClient.connect("127.0.0.1", server.port, on_information_report=q.put) as client:
+        client.write(f"{PROT}/LLN0$BR$brcbTrip01$RptEna", BoolData(True))
+        replay = _reports(q, 0.2)
+        assert [r.entries[0].value for r in replay] == [BoolData(True), BoolData(False)]
+        assert model.get(f"{PROT}/LLN0$BR$brcbTrip01$EntryID") == OctetStringData(replay[-1].entry_id)
+        rcb.disable(client, BRCBS[0])
+
+
 def test_buffer_overflow_only_when_unsent_entries_are_dropped(model: IedModel, monkeypatch: pytest.MonkeyPatch) -> None:
     from open61850.server import reporting
 

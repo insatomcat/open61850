@@ -9,6 +9,10 @@
   callbacks still run. A PDU that does not decode no longer ends the
   association: the request it answers fails at once with
   `MmsProtocolError` when its invokeID can be read (`undecodable`).
+- The server's BRCB EntryID and TimeOfEntry now name the last entry
+  sent, where they named the last one buffered. A client that came back
+  and enabled its block with RptEna alone, as IEDscout does, got nothing
+  of what was buffered while it was away; a VMC7 sends it all.
 
 ## 0.9.28 (2026-11-11)
 

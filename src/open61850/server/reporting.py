@@ -17,7 +17,9 @@ report control blocks work:
   gathers the entries of that many milliseconds into one report;
 - IntgPd sends integrity reports; a BRCB keeps its entries in a buffer
   (EntryID, BufOvfl) that an enabling client receives from the entry after
-  EntryID (all of it when EntryID is zero); BufOvfl is TRUE in the first
+  EntryID (all of it when EntryID is zero); EntryID and TimeOfEntry name
+  the last entry sent, so a client that enables the block again without
+  writing EntryID gets what was buffered since; BufOvfl is TRUE in the first
   report after the full buffer dropped an entry no client had been sent;
 - the buffer is bounded twice, the oldest entries dropped first: at most
   :data:`BUFFER_ENTRIES` entries, and at most the server's
@@ -485,8 +487,6 @@ class ReportEngine:
     def _deliver(self, rcb: ReportControl, entry: _Entry) -> None:
         if rcb.buffered:
             rcb.keep(entry)
-            rcb.set_attr("EntryID", OctetStringData(entry.entry_id.to_bytes(8, "big")))
-            rcb.set_attr("TimeOfEntry", RawData(0x8C, encode_binary_time(entry.time)))
         if rcb.enabled:
             self._send(rcb, entry)
 
@@ -522,6 +522,11 @@ class ReportEngine:
         rcb.set_attr("SqNum", UIntData((sq_num + 1) % modulo))
         rcb.overflowed = False
         rcb.sent = max(rcb.sent, entry.entry_id)
+        if rcb.buffered:
+            # EntryID and TimeOfEntry name the last entry sent: a client that enables the block again without
+            # writing EntryID gets what was buffered since (what a VMC7 does when IEDscout reconnects).
+            rcb.set_attr("EntryID", OctetStringData(entry.entry_id.to_bytes(8, "big")))
+            rcb.set_attr("TimeOfEntry", RawData(0x8C, encode_binary_time(entry.time)))
         connection = rcb.owner
         if connection is not None:
             self.server.broadcast(protocol.information_report(values, list_name="RPT", encoded=encoded), to=connection)  # type: ignore[arg-type]
