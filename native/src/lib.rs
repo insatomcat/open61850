@@ -473,10 +473,10 @@ fn stream_from(obj: &Bound<'_, PyAny>) -> PyResult<Stream> {
 }
 
 fn ints<T>(bytes: &[u8], convert: fn([u8; 4]) -> T) -> PyResult<Vec<T>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(PyValueError::new_err("playback data must be 32-bit integers"));
     }
-    Ok(bytes.chunks_exact(4).map(|c| convert([c[0], c[1], c[2], c[3]])).collect())
+    Ok(bytes.as_chunks::<4>().0.iter().map(|&c| convert(c)).collect())
 }
 
 fn playback_from(d: &Bound<'_, PyDict>) -> PyResult<Playback> {
@@ -585,7 +585,7 @@ impl Engine {
         if guard.is_some() {
             return Err(PyRuntimeError::new_err("already started"));
         }
-        let fd = open_socket(&self.config.iface).map_err(|e| PyOSError::new_err(e))?;
+        let fd = open_socket(&self.config.iface).map_err(PyOSError::new_err)?;
         let config = Arc::clone(&self.config);
         let counters = Arc::clone(&self.counters);
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();

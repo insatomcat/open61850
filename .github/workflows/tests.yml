@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: cargo test --manifest-path native/Cargo.toml -p open61850-core
-      - run: cargo clippy --manifest-path native/Cargo.toml -p open61850-core -p open61850-c --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets -- -D warnings
       - uses: taiki-e/install-action@v2
         with:
           tool: cbindgen@0.29.4
