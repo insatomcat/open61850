@@ -27,6 +27,9 @@
   the server does not have is answered object-undefined (it was a
   success with no result), one with fewer values than variables is
   rejected. A GetNameList's names are made once for all its pages.
+- The server's controls: a Cancel from the client of a time-activated
+  Oper, before its operTm, stops it. The Oper ran at operTm anyway, and
+  the object refused every other command until then.
 
 ## 0.9.28 (2026-11-11)
 

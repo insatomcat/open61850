@@ -563,6 +563,35 @@ def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:
                     assert client.read(f"{CTRL}/{ln}.Pos.stVal[ST]") == ON
 
 
+def test_a_cancel_stops_a_time_activated_operate(tmp_path) -> None:
+    scd = (DATA_DIR / "controls.scd.xml").read_text().replace(
+        '<BDA name="ctlVal" bType="BOOLEAN"/>\n      <BDA name="origin"',
+        '<BDA name="ctlVal" bType="BOOLEAN"/>\n      <BDA name="operTm" bType="Timestamp"/>\n      <BDA name="origin"', 1)
+    path = tmp_path / "timed.scd.xml"
+    path.write_text(scd)
+    executed: list = []
+    with MmsServer(IedModel.from_scl(path), "127.0.0.1", 0) as server:
+        server.start()
+        for ln in ("CSWI1", "CSWI3"):  # normal and enhanced security
+            server.controls.set_handler(f"{CTRL}/{ln}.Pos", executed.append)
+        with MmsClient.connect("127.0.0.1", server.port) as client, \
+                MmsClient.connect("127.0.0.1", server.port) as other:
+            for ln in ("CSWI1", "CSWI3"):
+                oper_tm = datetime.now(timezone.utc) + timedelta(seconds=0.3)
+                oper = oper_value(True, oper_tm=oper_tm)
+                client.write(f"{CTRL}/{ln}$CO$Pos$Oper", oper)
+                fields = dict(zip(server.model.node(f"{CTRL}/{ln}$CO$Pos$Oper").children, oper.members))
+                cancel = StructureData([fields[n] for n in server.model.node(f"{CTRL}/{ln}$CO$Pos$Cancel").children])
+                other.write(f"{CTRL}/{ln}$CO$Pos$Cancel", cancel)  # another client's Cancel does nothing
+                assert server.controls.executing(f"{CTRL}/{ln}.Pos")
+                client.write(f"{CTRL}/{ln}$CO$Pos$Cancel", cancel)
+                assert not server.controls.executing(f"{CTRL}/{ln}.Pos")
+            time.sleep(0.5)
+            assert executed == []
+            operate(client, f"{CTRL}/CSWI1.Pos", True, oper_tm=datetime.now(timezone.utc))  # it takes commands again
+            assert len(executed) == 1
+
+
 def test_a_data_set_written_on_a_block_is_the_one_reported(server: MmsServer, model: IedModel) -> None:
     """The members a change reaches are looked up by name, made once: a DatSet a client writes makes them again."""
     q: queue.Queue = queue.Queue()

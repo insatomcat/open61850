@@ -17,7 +17,9 @@ object's control model (``LN$CF$DO$ctlModel``):
 
 An Oper whose operTm (time-activated control) lies in the future is
 accepted at once and executed at that time; its CommandTermination, in
-enhanced security, comes after the execution.
+enhanced security, comes after the execution. A Cancel from the same client
+before that time stops it: nothing is executed, no termination follows, and
+the object takes commands again.
 
 A selection belongs to its client and lapses after sboTimeout (``CF``,
 30 s by default). A refused command gets a LastApplError informationReport,
@@ -161,6 +163,8 @@ class _Execution:
     command: Command
     oper: IECData
     enhanced: bool
+    waiting: bool = False  # a time-activated command before its operTm: a Cancel stops it
+    timer: Optional[threading.Timer] = None
 
 
 class ControlEngine:
@@ -277,6 +281,13 @@ class ControlEngine:
             if service == "Cancel":
                 if self._selected_by(key) is connection:
                     self._selections.pop(key, None)
+                execution = self._executions.get(key)
+                if execution is not None and execution.waiting and execution.client is connection:
+                    if execution.timer is not None:
+                        execution.timer.cancel()
+                    execution.waiting = False
+                    del self._executions[key]
+                    self._ended(execution.command)
                 return True
             if service == "SBOw":
                 if model != SBO_ENHANCED:
@@ -304,13 +315,14 @@ class ControlEngine:
             delay = _delay(fields.get("operTm"))
             enhanced = model in (DIRECT_ENHANCED, SBO_ENHANCED)
             if delay > 0 or enhanced:  # accepted now, executed later: the object is taken from now on
-                self._executions[key] = _Execution(connection, name, command, value, enhanced)
+                self._executions[key] = _Execution(connection, name, command, value, enhanced, waiting=delay > 0)
             if delay > 0:  # time-activated: accepted now, executed at operTm
+                timed = self._executions[key]
                 if model in (DIRECT_NORMAL, SBO_NORMAL):
-                    _later(delay, lambda: self._run(connection, name, command, value, False))
+                    self._arm(key, timed, delay, lambda: self._run(connection, name, command, value, False))
                 else:
                     connection.after_response.append(  # type: ignore[attr-defined]
-                        lambda: _later(delay, lambda: self._terminate(connection, name, command, value)))
+                        lambda: self._arm(key, timed, delay, lambda: self._terminate(connection, name, command, value)))
                 return True
             if model in (DIRECT_NORMAL, SBO_NORMAL):
                 cause = self._run(connection, name, command, value, False)
@@ -320,6 +332,19 @@ class ControlEngine:
             # enhanced security: positive response now, execution and termination after it
             connection.after_response.append(lambda: self._terminate(connection, name, command, value))  # type: ignore[attr-defined]
             return True
+
+    def _arm(self, key: tuple[str, str], execution: _Execution, delay: float, action: Callable[[], object]) -> None:
+        """Run ``action`` at operTm, unless a Cancel came first."""
+        def fire() -> None:
+            with self._lock:
+                if self._executions.get(key) is not execution or not execution.waiting:
+                    return  # cancelled (a Cancel may come while the timer is already firing)
+                execution.waiting, execution.timer = False, None
+            action()
+
+        with self._lock:
+            if self._executions.get(key) is execution and execution.waiting:
+                execution.timer = _later(delay, fire)
 
     def _fits_value(self, domain: str, item: str, ctl_val: IECData) -> bool:
         node = self.model.node(ObjectName(f"{item}$Oper$ctlVal", domain))
@@ -462,10 +487,11 @@ def _delay(oper_tm: Optional[IECData]) -> float:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
-def _later(delay: float, action: Callable[[], object]) -> None:
+def _later(delay: float, action: Callable[[], object]) -> threading.Timer:
     timer = threading.Timer(delay, action)
     timer.daemon = True
     timer.start()
+    return timer
 
 
 def _bool(value: Optional[IECData]) -> bool:
