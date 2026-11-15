@@ -107,7 +107,8 @@ def _decode_goose_pdu(apdu: bytes) -> GoosePDU:
         outer = ber.expect_tlv(apdu, 0, TAG_GOOSE_PDU)
         fields: dict[int, bytes] = {}
         for tlv in ber.iter_tlvs(outer.value):
-            fields[ber.tag_number(tlv.tag)] = tlv.value
+            tag = tlv.tag  # a one-octet tag is in the low form: its number is its 5 low bits
+            fields[tag & 0x1F if tag <= 0xFF else ber.tag_number(tag)] = tlv.value
     except ber.BerError as exc:
         raise GooseDecodeError(str(exc)) from exc
 
@@ -218,15 +219,22 @@ def _check_strict(apdu: bytes) -> None:
 def _check_strict_data(all_data: bytes) -> None:
     """Every Data of allData in preorder: one pass, stepping into structures
     (the lenient decoding checked that their members tile them)."""
-    at = 0
-    while at < len(all_data):
-        tlv = ber.decode_tlv(all_data, at)
-        tag, value = tlv.tag, tlv.value
+    at, size = 0, len(all_data)
+    while at < size:
+        if at + 2 <= size and all_data[at] & 0x1F != 0x1F and all_data[at + 1] < 0x80 \
+                and at + 2 + all_data[at + 1] <= size:  # a short TLV, inline
+            tag, start = all_data[at], at + 2
+            end = start + all_data[at + 1]
+        else:
+            tlv = ber.decode_tlv(all_data, at)
+            tag, end = tlv.tag, tlv.end
+            start = end - len(tlv.value)
+        value = all_data[start:end]
         container = tag & 0x1F in (1, 2)  # [1] array and [2] structure: constructed, and only they
         if tag > 0xFF or tag & 0xC0 != 0x80 or tag & 0x1F == 0x1F or bool(tag & 0x20) != container:
             raise _strict_error(f"allData tag 0x{tag:X} is not a Data")
         if container:
-            at = tlv.end - len(value)
+            at = start
             continue
         if tag in _DATA_SIZES and len(value) not in _DATA_SIZES[tag]:
             raise _strict_error(f"allData value 0x{tag:X} of {len(value)} octets")
@@ -236,7 +244,7 @@ def _check_strict_data(all_data: bytes) -> None:
             raise _strict_error("empty allData INTEGER")
         if tag == 0x8A and not _visible(value):
             raise _strict_error("allData VisibleString outside its alphabet")
-        at = tlv.end
+        at = end
 
 
 def encode_goose_pdu(pdu: GoosePDU) -> bytes:

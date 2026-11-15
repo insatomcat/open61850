@@ -311,7 +311,23 @@ def decode_data_at(data: bytes, offset: int = 0) -> tuple[IECData, int]:
 
 def decode_data_sequence(data: bytes) -> list[IECData]:
     """Decode consecutive ``Data`` TLVs; raise :class:`ber.BerError` if malformed."""
-    return [decode_data(tlv.tag, tlv.value) for tlv in ber.iter_tlvs(data)]
+    if not isinstance(data, bytes):
+        data = bytes(data)
+    out: list[IECData] = []
+    offset, size = 0, len(data)
+    while offset < size:
+        # The short TLV inline (allData and reports are made of them); anything else through ber.
+        if offset + 2 <= size:
+            tag, length = data[offset], data[offset + 1]
+            end = offset + 2 + length
+            if tag & 0x1F != 0x1F and length < 0x80 and end <= size:
+                out.append(decode_data(tag, data[offset + 2 : end]))
+                offset = end
+                continue
+        tlv = ber.decode_tlv(data, offset)
+        out.append(decode_data(tlv.tag, tlv.value))
+        offset = tlv.end
+    return out
 
 
 # --- encoding ----------------------------------------------------------------

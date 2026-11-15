@@ -166,7 +166,8 @@ def encode_tlv(tag: int, content: bytes = b"") -> bytes:
 def decode_tlv(data: bytes, offset: int = 0) -> Tlv:
     # Fast path for a low tag number and a short length, the usual case on the
     # process bus (SV decoding runs thousands of times per second).
-    if offset + 2 <= len(data) and data[offset] & 0x1F != 0x1F and data[offset + 1] < 0x80:
+    size = len(data)
+    if offset + 2 <= size and data[offset] & 0x1F != 0x1F and data[offset + 1] < 0x80:
         tag = data[offset]
         length = data[offset + 1]
         offset += 2
@@ -174,15 +175,25 @@ def decode_tlv(data: bytes, offset: int = 0) -> Tlv:
         tag, offset = decode_tag(data, offset)
         length, offset = decode_length(data, offset)
     end = offset + length
-    if end > len(data):
-        raise BerError(f"TLV 0x{tag:X} truncated: needs {length} bytes, {len(data) - offset} left")
+    if end > size:
+        raise BerError(f"TLV 0x{tag:X} truncated: needs {length} bytes, {size - offset} left")
     return Tlv(tag, bytes(data[offset:end]), end)
 
 
 def iter_tlvs(data: bytes) -> Iterator[Tlv]:
     """Iterate over consecutive TLVs covering exactly ``data``."""
-    offset = 0
-    while offset < len(data):
+    if not isinstance(data, bytes):
+        data = bytes(data)
+    offset, size = 0, len(data)
+    while offset < size:
+        # decode_tlv's fast path, inline; anything else (and every error) goes through decode_tlv.
+        if offset + 2 <= size:
+            tag, length = data[offset], data[offset + 1]
+            end = offset + 2 + length
+            if tag & 0x1F != 0x1F and length < 0x80 and end <= size:
+                yield Tlv(tag, data[offset + 2 : end], end)
+                offset = end
+                continue
         tlv = decode_tlv(data, offset)
         yield tlv
         offset = tlv.end

@@ -62,6 +62,10 @@
   application ends with `finish()` before its handler has run (the object
   is `executing()` from the Oper's acceptance) is no longer run after:
   its handler started it again, and no termination ever followed.
+- Faster Python decoding of short TLVs (`ber.iter_tlvs`,
+  `decode_data_sequence`, GOOSE fields and the strict checks): a GOOSE
+  frame of 10 structures decodes in 26 us where it took 40, 47 where it
+  took 74 in strict mode; a 2-ASDU SV frame in 7.4 us (recent Mac).
 
 ## 0.9.28 (2026-11-11)
 
