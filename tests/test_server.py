@@ -534,12 +534,20 @@ def test_control_shows_the_operation_received_and_given(switches: MmsServer) -> 
         operate(client, f"{CTRL}/CSWI1.Pos", False, test=True)
         assert seen == [("CSWI1.opRcvd", True), ("CSWI1.opRcvd", False)]
         seen.clear()
-        threading.Thread(target=lambda: operate(client, f"{CTRL}/CSWI3.Pos", True), daemon=True).start()
-        while not switches.controls.executing(f"{CTRL}/CSWI3.Pos"):
+        terminated: list = []
+        command = threading.Thread(target=lambda: terminated.append(operate(client, f"{CTRL}/CSWI3.Pos", True)),
+                                   daemon=True)
+        command.start()
+        deadline = time.monotonic() + 5
+        # executing() is true from the Oper's acceptance on; opOk once the handler has run. A finish() before
+        # that ended an execution the handler then started again, and no termination ever came.
+        while seen != [("CSWI3.opRcvd", True), ("CSWI3.opOk", True)] and time.monotonic() < deadline:
             time.sleep(0.01)
         assert seen == [("CSWI3.opRcvd", True), ("CSWI3.opOk", True)]
         switches.controls.finish(f"{CTRL}/CSWI3.Pos")
         assert seen[2:] == [("CSWI3.opOk", False), ("CSWI3.opRcvd", False)]
+        command.join(5)  # the termination reaches the client before it closes
+        assert terminated and terminated[0].terminated
 
 
 def test_time_activated_operate_waits_for_oper_tm(tmp_path) -> None:
