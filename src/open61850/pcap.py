@@ -116,7 +116,8 @@ def _read_pcap(handle: BinaryIO, order: str, units: int) -> Iterator[CapturedFra
         sec, frac, captured, _original = record.unpack(raw)
         if captured > _MAX_BLOCK:
             raise PcapError(f"record of {captured} bytes: corrupt file")
-        yield CapturedFrame(sec + frac / units, _exact(handle, captured, "record"), False)
+        yield CapturedFrame(sec + frac / units, _exact(handle, captured, "record"), False,
+                            sec * 1_000_000_000 + frac * (1_000_000_000 // units))
 
 
 class _Interface:
@@ -131,6 +132,14 @@ class _Interface:
     def timestamp(self, ticks: int) -> float:
         sec, frac = divmod(ticks, self.units)
         return self.offset + sec + frac / self.units
+
+    def timestamp_ns(self, ticks: int) -> int:
+        """The same time in nanoseconds (rounded down for ticks below a nanosecond)."""
+        sec, frac = divmod(ticks, self.units)
+        return (self.offset + sec) * 1_000_000_000 + frac * 1_000_000_000 // self.units
+
+    def frame(self, ticks: int, data: bytes, outgoing: bool) -> CapturedFrame:
+        return CapturedFrame(self.timestamp(ticks), data, outgoing, self.timestamp_ns(ticks))
 
 
 def _options(body: bytes, order: str) -> Iterator[tuple[int, bytes]]:
@@ -198,17 +207,17 @@ def _read_pcapng(handle: BinaryIO, first: bytes) -> Iterator[CapturedFrame]:
             for code, value in _options(body[20 + (captured + 3) // 4 * 4 :], order):
                 if code == _OPT_EPB_FLAGS and len(value) == 4:
                     outgoing = struct.unpack(order + "I", value)[0] & 3 == _EPB_OUTBOUND
-            yield CapturedFrame(iface.timestamp((high << 32) | low), data, outgoing)
+            yield iface.frame((high << 32) | low, data, outgoing)
         elif block_type == _SPB:
             iface = _lookup(interfaces, 0)
             original = struct.unpack_from(order + "I", body)[0]
             captured = min(original, iface.snaplen or original, len(body) - 4)
             # A Simple Packet Block has no timestamp.
-            yield CapturedFrame(0.0, body[4 : 4 + captured], False)
+            yield CapturedFrame(0.0, body[4 : 4 + captured], False, 0)
         elif block_type == _PB:
             iface_id, _drops, high, low, captured, _original = struct.unpack_from(order + "HHIIII", body)
             iface = _lookup(interfaces, iface_id)
-            yield CapturedFrame(iface.timestamp((high << 32) | low), body[20 : 20 + captured], False)
+            yield iface.frame((high << 32) | low, body[20 : 20 + captured], False)
 
 
 def _check_block_length(total: int) -> None:
@@ -237,11 +246,10 @@ class PcapWriter:
         """Append a frame; ``timestamp`` defaults to the frame's own (0 for bare bytes)."""
         if isinstance(frame, CapturedFrame):
             data = frame.data
-            when = frame.timestamp if timestamp is None else timestamp
+            ns = frame.time_ns() if timestamp is None else round(timestamp * 1_000_000_000)
         else:
             data = bytes(frame)
-            when = timestamp or 0.0
-        ns = round(when * 1_000_000_000)
+            ns = round((timestamp or 0.0) * 1_000_000_000)
         kept = data[: self._snaplen]
         self._handle.write(struct.pack("<IIII", ns // 1_000_000_000, ns % 1_000_000_000, len(kept), len(data)) + kept)
 

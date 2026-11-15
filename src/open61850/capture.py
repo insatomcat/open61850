@@ -128,13 +128,22 @@ _JGE_K = 0x35  # BPF_JMP | BPF_JGE | BPF_K
 
 
 class CapturedFrame(NamedTuple):
-    timestamp: float  # kernel receive time, seconds since the epoch
+    timestamp: float  # kernel receive time, seconds since the epoch (to about 240 ns today: a float)
     data: bytes  # the frame as on the wire (802.1Q tag restored)
     outgoing: bool  # sent by this host
+    timestamp_ns: Optional[int] = None  # the same time in nanoseconds, exact (captures and files set it)
+
+    def time_ns(self) -> int:
+        """The time in UNIX nanoseconds: ``timestamp_ns``, or ``timestamp`` rounded for a frame made by hand."""
+        return self.timestamp_ns if self.timestamp_ns is not None else round(self.timestamp * 1_000_000_000)
+
+
+def _frame(sec: int, nsec: int, data: bytes, outgoing: bool) -> CapturedFrame:
+    return CapturedFrame(sec + nsec * 1e-9, data, outgoing, sec * 1_000_000_000 + nsec)
 
 
 class CaptureStats(NamedTuple):
-    received: int
+    received: int  # frames the kernel queued to the socket
     dropped: int  # frames the kernel could not queue to the socket
     errors: int = 0  # socket errors read and cleared (ENETDOWN: the interface was down)
 
@@ -251,7 +260,7 @@ def read_block(ring: Union[bytes, mmap.mmap], offset: int, outgoing: bool = True
         is_out = ring[pos + _SLL_PKTTYPE] == PACKET_OUTGOING
         if outgoing or not is_out:
             data = _with_tag(ring[pos + mac : pos + mac + snaplen], status, tci, tpid)
-            frames.append(CapturedFrame(sec + nsec * 1e-9, data, is_out))
+            frames.append(_frame(sec, nsec, data, is_out))
         pos += next_offset
     return frames
 
@@ -263,7 +272,7 @@ def read_frame_v2(ring: Union[bytes, mmap.mmap], offset: int, outgoing: bool = T
     if is_out and not outgoing:
         return None
     data = _with_tag(ring[offset + mac : offset + mac + snaplen], _status_word, tci, tpid)
-    return CapturedFrame(sec + nsec * 1e-9, data, is_out)
+    return _frame(sec, nsec, data, is_out)
 
 
 class PacketCapture:
@@ -422,10 +431,11 @@ class PacketCapture:
 
     def stats(self) -> CaptureStats:
         """Cumulative counts (the kernel resets its own on every read)."""
-        # tpacket_stats for V2 (packets, drops), tpacket_stats_v3 adds a freeze count.
+        # tpacket_stats for V2 (packets, drops), tpacket_stats_v3 adds a freeze count. The kernel adds the
+        # drops to its packet count before handing it over (packet_getsockopt): taken off, received are queued.
         size = 8 if self.low_latency else 12
         packets, drops = struct.unpack_from("II", self._sock.getsockopt(SOL_PACKET, PACKET_STATISTICS, size))
-        self._received += packets
+        self._received += packets - drops
         self._dropped += drops
         return CaptureStats(self._received, self._dropped, self._errors)
 

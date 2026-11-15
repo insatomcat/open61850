@@ -23,24 +23,25 @@ from open61850.capture import CapturedFrame
 EDITCAP = {k: bytes.fromhex(v) for k, v in json.loads((DATA_DIR / "editcap_pcapng.json").read_text()).items() if k != "_source"}
 
 
-def _check_reference(frames: list[CapturedFrame], first_ts: float) -> None:
+def _check_reference(frames: list[CapturedFrame], first_ts: float, first_ns: int) -> None:
     assert len(frames) == 6
     counts = [sv.decode_sv_frame(f.data)[1].asdus[0].smp_cnt for f in frames[:5]]
     assert counts == [0, 1, 2, 3, 4]
     eth, pdu = goose.decode_goose_frame(frames[5].data)
     assert (eth.vlan_id, pdu.st_num, pdu.gocb_ref) == (10, 3, "IED01_LD0/LLN0$GO$gcb1")
     assert frames[0].timestamp == pytest.approx(first_ts, abs=1e-7)
+    assert frames[0].timestamp_ns == first_ns  # exact, where the float keeps about 240 ns
     assert frames[1].timestamp - frames[0].timestamp == pytest.approx(250e-6, abs=2e-6)
     assert frames[5].timestamp == pytest.approx(1790000000.5, abs=1e-7)
     assert not any(f.outgoing for f in frames)
 
 
 def test_editcap_pcapng_nanoseconds() -> None:
-    _check_reference(list(pcap.read_pcap(io.BytesIO(EDITCAP["ns"]))), 1790000000.123456717)
+    _check_reference(list(pcap.read_pcap(io.BytesIO(EDITCAP["ns"]))), 1790000000.123456717, 1790000000_123456768)  # its source pcap was written from a float
 
 
 def test_editcap_pcapng_default_microseconds() -> None:
-    _check_reference(list(pcap.read_pcap(io.BytesIO(EDITCAP["us"]))), 1790000000.123456)
+    _check_reference(list(pcap.read_pcap(io.BytesIO(EDITCAP["us"]))), 1790000000.123456, 1790000000_123456000)
 
 
 def test_path_source(tmp_path) -> None:
@@ -59,8 +60,9 @@ def test_writer_round_trip_and_file_objects() -> None:
     buf.seek(0)
     again = list(pcap.read_pcap(buf))
     assert [f.data for f in again] == [f.data for f in frames] + [b"\x01" * 20]
-    assert [f.timestamp for f in again[:-1]] == pytest.approx([f.timestamp for f in frames], abs=1e-9)
+    assert [f.timestamp_ns for f in again[:-1]] == [f.timestamp_ns for f in frames]  # to the nanosecond
     assert again[-1].timestamp == 12.5
+    assert CapturedFrame(1.5, b"", False).time_ns() == 1_500_000_000  # a frame made by hand: from its float
 
 
 def test_writer_snaplen_truncates(tmp_path) -> None:
@@ -74,7 +76,7 @@ def test_classic_big_endian_microseconds() -> None:
     raw = struct.pack(">IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
     raw += struct.pack(">IIII", 100, 250, 3, 3) + b"abc"
     (frame,) = pcap.read_pcap(io.BytesIO(raw))
-    assert frame == CapturedFrame(100.00025, b"abc", False)
+    assert frame == CapturedFrame(100.00025, b"abc", False, 100_000_250_000)
 
 
 def _block(order: str, block_type: int, body: bytes) -> bytes:
@@ -106,9 +108,9 @@ def test_pcapng_options_and_block_kinds(order: str) -> None:
     raw += unknown + _block(order, 3, spb) + _block(order, 2, old)
     frames = list(pcap.read_pcap(io.BytesIO(raw)))
     assert frames == [
-        CapturedFrame(1000.5, b"abc", True),
-        CapturedFrame(0.0, b"simple", False),
-        CapturedFrame(2.0, b"pb", False),
+        CapturedFrame(1000.5, b"abc", True, 1000_500_000_000),
+        CapturedFrame(0.0, b"simple", False, 0),
+        CapturedFrame(2.0, b"pb", False, 2_000_000_000),
     ]
 
 

@@ -30,6 +30,12 @@
 - The server's controls: a Cancel from the client of a time-activated
   Oper, before its operTm, stops it. The Oper ran at operTm anyway, and
   the object refused every other command until then.
+- `CapturedFrame.timestamp_ns`: the capture time in nanoseconds, exact,
+  from a capture and from pcap and pcapng files (the float `timestamp`
+  keeps about 240 ns today); `time_ns()` falls back on the float for a
+  frame made by hand. `PcapWriter` and the Python SV receiver use it.
+  `CaptureStats.received` no longer counts the dropped frames: the
+  kernel adds them to the packet count it hands over.
 
 ## 0.9.28 (2026-11-11)
 

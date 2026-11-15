@@ -204,7 +204,7 @@ class _PythonEngine:
             while not self.stop_flag:
                 f = capture.recv()
                 if f is not None:
-                    self.feed(f.data, round(f.timestamp * 1e9))
+                    self.feed(f.data, f.time_ns())
 
         self.thread = threading.Thread(target=run, name="sv-receiver", daemon=True)
         self.thread.start()
