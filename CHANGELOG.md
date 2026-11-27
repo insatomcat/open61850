@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.30 (2026-11-27)
 
 - `ethertype_filter`, `PacketCapture` and `set_ethertypes` take the
   APPIDs per ethertype: `app_ids={ETHERTYPE_GOOSE: (...)}` keeps every
