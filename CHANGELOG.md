@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `ethertype_filter`, `PacketCapture` and `set_ethertypes` take the
+  APPIDs per ethertype: `app_ids={ETHERTYPE_GOOSE: (...)}` keeps every
+  SV stream and only the GOOSE named. A receiver of the whole SV bus
+  that follows a few GOOSE had to let every GOOSE in: each took a slot of
+  its TPACKET_V2 ring, and an emitter preempted between taking the slot
+  and marking it ready held the SV written behind (up to 3.9 ms measured
+  with automata publishing in SCHED_OTHER on the same host). A tuple
+  still applies to every ethertype, with the same program as before.
+
 ## 0.9.29 (2026-11-15)
 
 - `MmsClient` survives a report callback or listener that raises: the

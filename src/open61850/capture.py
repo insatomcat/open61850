@@ -75,6 +75,7 @@ import mmap
 import select
 import socket
 import struct
+from collections.abc import Mapping
 from typing import NamedTuple, Optional, Union
 
 from .ethernet import ETHERTYPE_GOOSE, ETHERTYPE_SV, ETHERTYPE_VLAN
@@ -156,7 +157,10 @@ class Ring(NamedTuple):
     slots: int
 
 
-def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ()) -> list[tuple[int, int, int, int]]:
+AppIds = Union[tuple[int, ...], Mapping[int, tuple[int, ...]]]
+
+
+def ethertype_filter(ethertypes: tuple[int, ...], app_ids: AppIds = ()) -> list[tuple[int, int, int, int]]:
     """Classic BPF program accepting ``ethertypes``, with or without one 802.1Q tag.
 
     When the kernel strips the tag, the ethertype is at offset 12; otherwise
@@ -164,30 +168,44 @@ def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ())
     kept only if the APPID that follows its ethertype (GOOSE, SV, GSE) is one
     of them: the other streams of the bus never reach the socket, so a
     subscriber to a few of many streams pays the kernel's copy and its own
-    reading for its streams only.
+    reading for its streams only. ``app_ids`` as a mapping gives each
+    ethertype its APPIDs: an ethertype it does not name, or names with none,
+    is kept whole (every SV stream, and only the GOOSE subscribed to).
     """
     ets = tuple(ethertypes)
-    # The APPIDs as ranges of consecutive values: a range is two tests, one value one, so that a
-    # subscriber to many streams numbered in a row stays within classic BPF's 255-instruction jumps.
-    ranges: list[tuple[int, int]] = []
-    for a in sorted(set(app_ids)):
-        if ranges and a == ranges[-1][1] + 1:
-            ranges[-1] = (ranges[-1][0], a)
-        else:
-            ranges.append((a, a))
+    wanted = app_ids if isinstance(app_ids, Mapping) else {et: app_ids for et in ets}
+    # The APPIDs of each ethertype as ranges of consecutive values: a range is two tests, one value
+    # one, so that a subscriber to many streams numbered in a row stays within classic BPF's
+    # 255-instruction jumps.
+    ranges: dict[int, tuple[tuple[int, int], ...]] = {}
+    for et in ets:
+        kept: list[tuple[int, int]] = []
+        for a in sorted(set(wanted.get(et, ()))):
+            if kept and a == kept[-1][1] + 1:
+                kept[-1] = (kept[-1][0], a)
+            else:
+                kept.append((a, a))
+        if kept:
+            ranges[et] = tuple(kept)
+    # One block of tests per set of ranges, shared by the ethertypes that have the same.
+    blocks = list(dict.fromkeys(ranges.values()))
+
+    def to(et: int, form: str) -> str:
+        return f"{form}{blocks.index(ranges[et])}" if et in ranges else "accept"
+
     # Written with labels, the jumps resolved after: (opcode, true, false, k), a jump being a label,
     # None (the next instruction) or an int (that many instructions further).
     code: list[tuple[int, object, object, int]] = [(_LDH_ABS, None, None, 12)]
-    code += [(_JEQ_K, "app_u", None, et) for et in ets]
+    code += [(_JEQ_K, to(et, "app_u"), None, et) for et in ets]
     code += [(_JEQ_K, None, "reject", ETHERTYPE_VLAN), (_LDH_ABS, None, None, 16)]
-    code += [(_JEQ_K, "app_t", None, et) for et in ets]
+    code += [(_JEQ_K, to(et, "app_t"), None, et) for et in ets]
     code.append((_RET_K, None, None, 0))
     labels: dict[str, int] = {}
-    if ranges:
-        for name, offset in (("app_u", 14), ("app_t", 18)):
+    for index, block in enumerate(blocks):
+        for name, offset in ((f"app_u{index}", 14), (f"app_t{index}", 18)):
             labels[name] = len(code)
             code.append((_LDH_ABS, None, None, offset))
-            for lo, hi in ranges:
+            for lo, hi in block:
                 if lo == hi:
                     code.append((_JEQ_K, "accept", None, lo))
                 else:  # lo <= appid: then appid > hi goes on to the next range, else accept
@@ -197,8 +215,6 @@ def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ())
     code.append((_RET_K, None, None, 0))
     labels["accept"] = len(code)
     code.append((_RET_K, None, None, 0x40000))
-    if not ranges:
-        labels["app_u"] = labels["app_t"] = labels["accept"]
 
     def jump_to(pc: int, jump: object) -> int:
         if jump is None:
@@ -212,7 +228,8 @@ def ethertype_filter(ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ())
         if op in (_JEQ_K, _JGE_K, _JGT_K):
             t, f = jump_to(pc, jt), jump_to(pc, jf)
             if not (0 <= t <= 255 and 0 <= f <= 255):
-                raise ValueError(f"too many ethertypes and APPID ranges for one filter ({len(ets)} and {len(ranges)})")
+                count = sum(len(block) for block in blocks)
+                raise ValueError(f"too many ethertypes and APPID ranges for one filter ({len(ets)} and {count})")
             program.append((op, t, f, k))
         else:
             program.append((op, 0, 0, k))
@@ -287,7 +304,7 @@ class PacketCapture:
         outgoing: bool = True,
         low_latency: bool = False,
         busy_poll: Optional[int] = None,
-        app_ids: tuple[int, ...] = (),
+        app_ids: AppIds = (),
     ) -> None:
         """Open the capture; ``recv`` returns None after ``timeout`` seconds without a frame.
 
@@ -296,7 +313,8 @@ class PacketCapture:
         ``low_latency`` hands each frame over at once (TPACKET_V2, see above).
         ``busy_poll``: microseconds of kernel busy polling for this socket, 0
         for none; None keeps the host's ``net.core.busy_read`` (see above).
-        ``app_ids``: keep only the frames of these APPIDs (:func:`ethertype_filter`).
+        ``app_ids``: keep only the frames of these APPIDs, or of these APPIDs
+        per ethertype (a mapping, :func:`ethertype_filter`).
         """
         self.iface = iface
         self.outgoing = outgoing
@@ -346,9 +364,9 @@ class PacketCapture:
             self.close()
             raise
 
-    def set_ethertypes(self, ethertypes: tuple[int, ...], app_ids: tuple[int, ...] = ()) -> None:
-        """Replace the kernel filter (the ethertypes, and the APPIDs when given)."""
-        program = ethertype_filter(tuple(ethertypes), tuple(app_ids))
+    def set_ethertypes(self, ethertypes: tuple[int, ...], app_ids: AppIds = ()) -> None:
+        """Replace the kernel filter (the ethertypes, and the APPIDs when given, per ethertype in a mapping)."""
+        program = ethertype_filter(tuple(ethertypes), app_ids if isinstance(app_ids, Mapping) else tuple(app_ids))
         code = b"".join(struct.pack("=HBBI", *insn) for insn in program)
         buf = ctypes.create_string_buffer(code, len(code))
         fprog = struct.pack("@HP", len(program), ctypes.addressof(buf))

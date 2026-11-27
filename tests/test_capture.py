@@ -79,6 +79,33 @@ def test_filter_on_app_id_ranges(vlan: int | None) -> None:
         assert not run_filter(program, _sv(a, vlan)), hex(a)
 
 
+def _goose(app_id: int, vlan: int | None = None) -> bytes:
+    return _frame(0x88B8, vlan, app_id.to_bytes(2, "big") + b"\x00\x08\x00\x00\x00\x00")
+
+
+@pytest.mark.parametrize("vlan", [None, 5])
+def test_filter_on_app_ids_per_ethertype(vlan: int | None) -> None:
+    """Every SV stream, and only the GOOSE named: the other GOOSE of the bus never take a slot of the ring."""
+    program = ethertype_filter((0x88BA, 0x88B8), {0x88B8: (0x0010, 0x0011, 0x3001)})
+    for a in (0x4000, 0x0010, 0x1234):
+        assert run_filter(program, _sv(a, vlan)), hex(a)
+    for a in (0x0010, 0x0011, 0x3001):
+        assert run_filter(program, _goose(a, vlan)), hex(a)
+    for a in (0x000F, 0x0012, 0x3000, 0x4000):
+        assert not run_filter(program, _goose(a, vlan)), hex(a)
+    assert not run_filter(program, _frame(0x0800, vlan, (0x0010).to_bytes(2, "big") + bytes(6)))
+
+
+def test_filter_on_app_ids_per_ethertype_each_its_own() -> None:
+    program = ethertype_filter((0x88BA, 0x88B8), {0x88BA: (0x4000,), 0x88B8: (0x10,), 0x0800: (1,)})
+    assert run_filter(program, _sv(0x4000)) and not run_filter(program, _sv(0x10))
+    assert run_filter(program, _goose(0x10)) and not run_filter(program, _goose(0x4000))
+    # an ethertype named with no APPID is kept whole; a mapping the same for both is the tuple's program
+    assert run_filter(ethertype_filter((0x88B8,), {0x88B8: ()}), _goose(0x1234))
+    both = (0x4000, 0x4002)
+    assert ethertype_filter((0x88B8, 0x88BA), {0x88B8: both, 0x88BA: both}) == ethertype_filter((0x88B8, 0x88BA), both)
+
+
 def test_filter_refuses_too_many_app_id_ranges() -> None:
     assert run_filter(ethertype_filter((0x88BA,), tuple(range(0, 200, 2))), _sv(198))
     with pytest.raises(ValueError):
